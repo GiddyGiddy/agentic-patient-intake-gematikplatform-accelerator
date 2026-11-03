@@ -1,6 +1,37 @@
-﻿# Agentic Patient Intake – gematik Accelerator
+# Agentic Patient Intake – gematik Accelerator
 
-Agentic patient intake (anamnesis, triage, ePA consent, FHIR scheduling, KIM letter) built with FastAPI + LangGraph, with local mocks for the Telematikinfrastruktur (TI).
+Agentic patient intake for the gematik Telematikinfrastruktur (TI): structured anamnesis, Manchester triage, ePA consent, FHIR appointment booking in the KIS and a KIM letter to the referring doctor. Built with React, FastAPI, LangGraph, PostgreSQL and a local LLM. Runs **on-premise** with Podman; the TI services are simulated by local mocks for development and end-to-end tests.
+
+## Current status
+
+| Area | Status |
+|---|---|
+| Frontend (OIDC PKCE login, chat, consent dialog, emergency banner, result card, a11y) | Done, 26 Jest tests |
+| Backend (agents, server-side session and consent, ePA read, FHIR booking, KIM, audit, hardening) | Done, 57 pytest tests |
+| PostgreSQL persistence (sessions, consent, audit, KIM outbox) | Done, tests pass on SQLite and on a real PostgreSQL |
+| Mock TI services (ID-Dienst, KIS/ePA HAPI FHIR, KIM client module, TI gateway with simulated SMC-B) | Done |
+| Podman compose for the whole stack | Config validated; full `podman compose up --build` not yet run end-to-end |
+| Browser run-through of frontend + backend + mocks together | Not yet done |
+| Production TI connection (real gateway/Konnektor, SMC-B/HSM-B, real Gesundheits-ID) | Not part of this accelerator; only URLs/config change |
+
+## Solution Architecture
+
+![Agentic Patient Intake on-premise solution architecture](./docs/solution-architecture.svg)
+
+The backend, database and LLM run in the clinic's own data center because the data is sensitive health data. Nothing is sent to a public cloud. The Azure items in the diagram (Arc, Monitor) are an optional management layer for operational metadata only. The icons are simplified drawings, not the official Azure icon set.
+
+### Components
+
+| Component | Technology | Where | Dev mock |
+|---|---|---|---|
+| Frontend | React 18, nginx | On-premise | – |
+| Backend | FastAPI, LangGraph, SQLAlchemy | On-premise | – |
+| Database | PostgreSQL 16 (only persistent store) | On-premise | – |
+| LLM | Ollama (local, rule-based fallback) | On-premise | – |
+| Gesundheits-ID (OIDC) | OpenID Connect / OAuth2 | TI | `mock-id-dienst` :8081 |
+| TI gateway / Konnektor (HSM-B / SMC-B) | Reverse proxy, signs requests, adds Telematik-ID | TI | `mock-ti-gateway` :8082 |
+| ePA + KIS (FHIR / ISiK) | HAPI FHIR | TI / clinic | `mock-kis-fhir` :8080 (+ `mock-kis-seed`) |
+| KIM client module | SMTP | TI | `mock-kim-cm` :2525 |
 
 ## Start
 
@@ -14,78 +45,90 @@ podman compose up --build
 | Frontend | http://localhost:3000 |
 | Backend (OpenAPI) | http://localhost:8000/docs |
 | Mock ID-Dienst | http://localhost:8081/.well-known/openid-configuration |
-| Mock KIS (HAPI FHIR) | http://localhost:8080/fhir |
+| Mock TI gateway | http://localhost:8082/health |
+| Mock KIS/ePA (HAPI FHIR) | http://localhost:8080/fhir |
 | Mock KIM-CM (SMTP) | localhost:2525 |
 | LLM (Ollama) | http://localhost:11434 (`podman compose exec llm ollama pull llama3.1`) |
 
-Without a reachable LLM the intake agent uses a rule-based fallback.
+Demo patients: `X110000001` (two active medications in the ePA), `X110000002` (none). Without a reachable LLM the intake agent uses a rule-based fallback. On Windows, use `127.0.0.1` instead of `localhost` for published database ports.
 
 ## Agent flow
 
-`intake_agent` → `consent_agent` → (consent granted) `scheduling_agent` → `kim_agent`.
-Without ePA consent the flow ends after intake; no TI access is made.
-
-## Login
-
-The frontend signs in via OIDC authorization code flow with PKCE against the mock ID-Dienst
-(demo patients `X110000001`, `X110000002`). The token lives in sessionStorage and the session
-ends on expiry, logout or a 401 from the backend.
-
-## Local frontend dev
-
-```powershell
-cd frontend
-npm install
-npm run dev      # dev server on http://localhost:3000
-npm test         # Jest + Testing Library
-npm run build    # production build
+```
+POST /api/chat → intake_agent (anamnesis, Manchester triage)
+      → consent_agent (stops until consent is granted)
+      → scheduling_agent (FHIR Slot + Appointment in the KIS)
+      → kim_agent (Arztbrief + triage.json → KIM outbox) → END
 ```
 
-Config is read at build time: `REACT_APP_API_URL`, `REACT_APP_OIDC_ISSUER`, `REACT_APP_OIDC_CLIENT_ID`.
-The container image builds the app and serves it with nginx (the values are passed as build args in `docker-compose.yml`).
+- Consent, triage and conversation are held **server-side** per patient; the client cannot set them.
+- The ePA medication plan is read only after consent, with the patient's Gesundheits-ID token.
+- Red/orange patients get acute slots, green patients standard slots.
+- The graph is invoked in `backend/app/api/endpoints.py` (`_run`).
 
 ## Backend API
 
-All endpoints require the Gesundheits-ID bearer token. Conversation, triage and consent are kept
-**server-side** per patient (in-memory store, `app/core/session.py`); the client cannot set them.
+All endpoints require the Gesundheits-ID bearer token.
 
 | Endpoint | Purpose |
 |---|---|
-| `POST /api/chat` `{message}` | Adds a patient message, runs the agent graph. Intake asks follow-up questions (LLM, rule-based fallback) until triage is set, then waits for consent. |
-| `POST /api/consent` `{granted}` | Grant resumes the workflow: ePA medication plan → FHIR Appointment in the KIS → KIM letter. Idempotent after completion. `granted:false` revokes. |
-| `DELETE /api/session` | Starts over / logout: drops conversation, triage and consent. |
+| `POST /api/chat` `{message}` | Adds a patient message and runs the graph. Asks follow-up questions until triage is set, then waits for consent. |
+| `POST /api/consent` `{granted}` | Grant resumes the workflow: ePA medication plan, FHIR Appointment, KIM letter. Idempotent after completion. `granted:false` revokes. |
+| `DELETE /api/session` | Start over / logout: drops conversation, triage and consent. |
+| `GET /health` | Status including database reachability (503 if the DB is down). |
 
-Errors: `502` TI service (KIS/ePA) unreachable (retry is safe, nothing is double-booked), `409` intake
-already completed or no active intake, `422` message too long, `429` rate limit. A failed KIM hand-over
-does not fail the run; the response has `kim_sent: false`.
-Every TI-relevant action (consent, ePA read, appointment, KIM) is written as a JSON line to the audit log
-with a pseudonymised patient id and no medical content.
-
-## Local backend dev
-
-```powershell
-cd backend
-pip install -r requirements.txt
-$env:AUTH_DISABLED="true"; uvicorn main:app --reload
-```
+Errors: `502` TI service (KIS/ePA) unreachable (retry is safe), `409` intake already completed or none active, `422` message too long, `429` rate limit. A failed KIM hand-over does not fail the run; the response has `kim_sent: false` and the outbox retries.
 
 ## Persistence (PostgreSQL)
 
-PostgreSQL is the only store (service postgres, volume pg-data; started with Podman via podman compose up --build). Schema is created on startup with create_all (no Alembic migrations yet).
+PostgreSQL is the only store (service `postgres`, volume `pg-data`). Tables are created on startup with `create_all` (no Alembic migrations yet).
 
 | Table | Content |
 |---|---|
-| intake_session | conversation, triage score, summary, result (per patient sub; idle sessions are purged) |
-| consent | durable consent records (scope, granted/expires/revoked, token jti); never deleted |
-| udit | pseudonymised audit events (no medical content) |
-| kim_outbox | Arztbrief + 	riage.json until delivered; retried every KIM_RETRY_INTERVAL_S; content wiped after sending |
+| `intake_session` | conversation, triage score, summary, result (per patient `sub`; idle sessions are purged) |
+| `consent` | durable consent records (scope, granted/expires/revoked, token `jti`); never deleted |
+| `audit_event` | pseudonymised audit events (no medical content); also written as JSON lines |
+| `kim_outbox` | Arztbrief + `triage.json` until delivered; retried every `KIM_RETRY_INTERVAL_S`; content wiped after sending |
 
-Not persisted: access tokens, ePA medication data, slots/appointments (these stay in the KIS/ePA).
-
-Limitations: the rate limiter is in memory per instance; a crash between the FHIR booking and the DB commit can leave a booking without session state. Tests use in-memory SQLite.
+Not persisted: access tokens, ePA medication data, slots and appointments (they stay in the KIS/ePA).
 
 ## Mock TI gateway (SMC-B / HSM-B)
 
-All KIS and ePA calls of the backend go through `mock-ti-gateway` (port 8082): `FHIR_BASE_URL`/`EPA_BASE_URL` point to `http://mock-ti-gateway:8082/fhir`. The gateway keeps the patient's Gesundheits-ID token, adds `X-TI-Telematik-ID` and an RS256 assertion (`X-SMCB-Assertion`, certificate in `x5c`) signed with a simulated SMC-B key. The self-signed key is generated at start-up (or loaded from `certs/smcb_key.pem` + `smcb_cert.pem`) and is never committed. Follow it with `podman compose logs -f mock-ti-gateway`.
+All KIS and ePA calls go through `mock-ti-gateway`: `FHIR_BASE_URL` and `EPA_BASE_URL` point to `http://mock-ti-gateway:8082/fhir`. The gateway keeps the patient's token, adds `X-TI-Telematik-ID` and an RS256 assertion (`X-SMCB-Assertion`, certificate in `x5c`) signed with a simulated SMC-B key. The self-signed key is generated at start-up or loaded from `certs/smcb_key.pem` + `smcb_cert.pem`; it is never committed. Follow it with `podman compose logs -f mock-ti-gateway`. The HAPI mock does not verify the assertion; the signature is covered by `backend/tests/test_ti_gateway.py`.
 
-The HAPI mock does not verify the assertion; the signature check is covered by `backend/tests/test_ti_gateway.py`. In production the real gateway/Konnektor replaces this service and only the URLs change.
+## Security and privacy
+
+- Token validation against the Gesundheits-ID JWKS; `AUTH_DISABLED` is for local development only.
+- Audit log uses a pseudonymised patient id (sha256 prefix) and contains no medical content.
+- CORS allow-list, message length cap and per-patient rate limit.
+- Consent is revoked on reset or session timeout.
+
+## Development
+
+```powershell
+# backend
+cd backend
+pip install -r requirements.txt -r requirements-dev.txt
+python -m pytest -q                                   # in-memory SQLite
+$env:TEST_DATABASE_URL="postgresql+psycopg://intake:intake@127.0.0.1:55432/intake"; python -m pytest -q   # real PostgreSQL
+$env:AUTH_DISABLED="true"; uvicorn main:app --reload
+
+# frontend
+cd frontend
+npm install
+npm run dev      # http://localhost:3000
+npm test         # Jest + Testing Library
+npm run build
+```
+
+Frontend config is read at build time: `REACT_APP_API_URL`, `REACT_APP_OIDC_ISSUER`, `REACT_APP_OIDC_CLIENT_ID` (passed as build args in `docker-compose.yml`). See `.env.example` for all backend settings.
+
+## Known limitations
+
+- Full stack not yet exercised end-to-end in containers or a browser.
+- No Alembic migrations (`create_all` only).
+- Rate limiter is in memory per instance.
+- A crash between the FHIR booking and the DB commit can leave a booking without session state.
+- Consent is not yet tied to a fresh Gesundheits-ID authentication.
+- The HAPI mock does not verify the SMC-B assertion.
+- Production needs a real TI gateway/Konnektor, SMC-B/HSM-B and gematik-approved IdP.
