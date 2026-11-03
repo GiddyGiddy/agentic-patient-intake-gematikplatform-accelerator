@@ -1,10 +1,12 @@
 services:
   frontend:
-    build: ./frontend
+    build:
+      context: ./frontend
+      args:
+        REACT_APP_API_URL: http://localhost:${BACKEND_PORT:-8000}
+        REACT_APP_OIDC_ISSUER: http://localhost:8081
     ports:
-      - "${FRONTEND_PORT:-3000}:3000"
-    environment:
-      REACT_APP_API_URL: http://localhost:${BACKEND_PORT:-8000}
+      - "${FRONTEND_PORT:-3000}:80"
     depends_on:
       - backend
 

@@ -25,6 +25,25 @@ Without a reachable LLM the intake agent uses a rule-based fallback.
 `intake_agent` → `consent_agent` → (consent granted) `scheduling_agent` → `kim_agent`.
 Without ePA consent the flow ends after intake; no TI access is made.
 
+## Login
+
+The frontend signs in via OIDC authorization code flow with PKCE against the mock ID-Dienst
+(demo patients `X110000001`, `X110000002`). The token lives in sessionStorage and the session
+ends on expiry, logout or a 401 from the backend.
+
+## Local frontend dev
+
+```powershell
+cd frontend
+npm install
+npm run dev      # dev server on http://localhost:3000
+npm test         # Jest + Testing Library
+npm run build    # production build
+```
+
+Config is read at build time: `REACT_APP_API_URL`, `REACT_APP_OIDC_ISSUER`, `REACT_APP_OIDC_CLIENT_ID`.
+The Docker image builds the app and serves it with nginx (the values are passed as build args in `docker-compose.yml`).
+
 ## Local backend dev
 
 ```powershell

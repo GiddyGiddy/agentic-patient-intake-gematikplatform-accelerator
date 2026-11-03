@@ -1,21 +1,26 @@
-const API = process.env.REACT_APP_API_URL || "http://localhost:8000";
+import { config } from "../config";
 
-export async function sendChat(token, payload) {
-  const res = await fetch(`${API}/api/chat`, {
-    method: "POST",
-    headers: {
-      "Content-Type": "application/json",
-      Authorization: `Bearer ${token}`,
-    },
-    body: JSON.stringify(payload),
-  });
-  if (!res.ok) throw new Error(`Backend error ${res.status}`);
-  return res.json();
+export class ApiError extends Error {
+  constructor(status) {
+    super(`Backend error ${status}`);
+    this.status = status;
+  }
 }
 
-// Dev only: fetches a token from the mock ID service.
-export async function devLogin() {
-  const res = await fetch("http://localhost:8081/token", { method: "POST" });
-  if (!res.ok) throw new Error("Login failed");
-  return (await res.json()).access_token;
+export async function sendChat(token, payload) {
+  let res;
+  try {
+    res = await fetch(`${config.apiUrl}/api/chat`, {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        Authorization: `Bearer ${token}`,
+      },
+      body: JSON.stringify(payload),
+    });
+  } catch {
+    throw new ApiError(0);
+  }
+  if (!res.ok) throw new ApiError(res.status);
+  return res.json();
 }

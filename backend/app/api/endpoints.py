@@ -35,5 +35,6 @@ def chat(req: ChatRequest, user: dict = Depends(get_current_user)):
         "iam_required": result.get("iam_required", False),
         "iam_message": result.get("iam_message"),
         "appointment_id": result.get("appointment_id"),
+        "slot_start": result.get("slot_start"),
         "kim_sent": result.get("kim_sent", False),
     }
