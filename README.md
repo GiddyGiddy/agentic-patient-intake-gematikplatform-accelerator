@@ -83,3 +83,9 @@ PostgreSQL is the only store (service postgres, volume pg-data; started with Pod
 Not persisted: access tokens, ePA medication data, slots/appointments (these stay in the KIS/ePA).
 
 Limitations: the rate limiter is in memory per instance; a crash between the FHIR booking and the DB commit can leave a booking without session state. Tests use in-memory SQLite.
+
+## Mock TI gateway (SMC-B / HSM-B)
+
+All KIS and ePA calls of the backend go through `mock-ti-gateway` (port 8082): `FHIR_BASE_URL`/`EPA_BASE_URL` point to `http://mock-ti-gateway:8082/fhir`. The gateway keeps the patient's Gesundheits-ID token, adds `X-TI-Telematik-ID` and an RS256 assertion (`X-SMCB-Assertion`, certificate in `x5c`) signed with a simulated SMC-B key. The self-signed key is generated at start-up (or loaded from `certs/smcb_key.pem` + `smcb_cert.pem`) and is never committed. Follow it with `podman compose logs -f mock-ti-gateway`.
+
+The HAPI mock does not verify the assertion; the signature check is covered by `backend/tests/test_ti_gateway.py`. In production the real gateway/Konnektor replaces this service and only the URLs change.

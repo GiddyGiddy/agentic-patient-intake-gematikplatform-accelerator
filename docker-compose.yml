@@ -17,8 +17,9 @@ services:
       - OIDC_ISSUER=http://mock-id-dienst:8081
       - OIDC_JWKS_URL=http://mock-id-dienst:8081/jwks
       - LLM_BASE_URL=http://llm:11434
-      - FHIR_BASE_URL=http://mock-kis-fhir:8080/fhir
-      - EPA_BASE_URL=http://mock-kis-fhir:8080/fhir
+      # all KIS/ePA calls go through the mock TI gateway (SMC-B signature + Telematik-ID)
+      - FHIR_BASE_URL=http://mock-ti-gateway:8082/fhir
+      - EPA_BASE_URL=http://mock-ti-gateway:8082/fhir
       - KIM_SMTP_HOST=mock-kim-cm
       - KIM_SMTP_PORT=2525
       - DATABASE_URL=postgresql+psycopg://${POSTGRES_USER:-intake}:${POSTGRES_PASSWORD:-intake}@postgres:5432/${POSTGRES_DB:-intake}
@@ -29,7 +30,7 @@ services:
         condition: service_healthy
       mock-kim-cm:
         condition: service_started
-      mock-kis-fhir:
+      mock-ti-gateway:
         condition: service_started
       mock-id-dienst:
         condition: service_started
@@ -74,6 +75,18 @@ services:
     environment:
       hapi.fhir.fhir_version: R4
       hapi.fhir.allow_external_references: "true"
+
+  # Simulated TI gateway with HSM-B/SMC-B identity: signs requests, adds X-TI-Telematik-ID
+  mock-ti-gateway:
+    build: ./mock-ti-services/mock-ti-gateway
+    environment:
+      UPSTREAM_FHIR_URL: http://mock-kis-fhir:8080/fhir
+    ports:
+      - "8082:8082"
+    depends_on:
+      - mock-kis-fhir
+    networks:
+      - ti-network
 
   # Seeds Patient, Slot and ePA MedicationStatement test data into the mock (KIS + ePA)
   mock-kis-seed:
