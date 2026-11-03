@@ -1,0 +1,7 @@
+fastapi>=0.110
+uvicorn[standard]>=0.29
+langgraph>=0.2
+fhirpy>=1.4
+httpx>=0.27
+pydantic-settings>=2.2
+pyjwt[crypto]>=2.8
