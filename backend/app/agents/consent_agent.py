@@ -1,5 +1,9 @@
 from app.agents.state import IntakeState
+from app.core.audit import audit
 from app.core.epa_client import fetch_medication_plan
+
+
+IAM_MESSAGE = "Bitte geben Sie den Zugriff auf Ihre ePA-Daten über Ihre Gesundheits-ID frei."
 
 
 def consent_node(state: IntakeState) -> IntakeState:
@@ -8,7 +12,9 @@ def consent_node(state: IntakeState) -> IntakeState:
     Without consent the workflow stops and the frontend must obtain approval via Gesundheits-ID.
     """
     if state.get("consent_granted"):
-        meds, reachable = fetch_medication_plan(state.get("patient_id", ""), state.get("access_token"))
+        pid = state.get("patient_id", "")
+        meds, reachable = fetch_medication_plan(pid, state.get("access_token"))
+        audit("epa_read", pid, resource="MedicationStatement", count=len(meds), reachable=reachable)
         return {
             "iam_required": False,
             "medication_plan": meds,
@@ -17,6 +23,6 @@ def consent_node(state: IntakeState) -> IntakeState:
         }
     return {
         "iam_required": True,
-        "iam_message": "Bitte geben Sie den Zugriff auf Ihre ePA-Daten über Ihre Gesundheits-ID frei.",
+        "iam_message": IAM_MESSAGE,
         "next_agent": "ConsentAgent",
     }

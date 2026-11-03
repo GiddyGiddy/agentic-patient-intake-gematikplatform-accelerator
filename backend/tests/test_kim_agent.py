@@ -1,4 +1,4 @@
-import email
+﻿import email
 import json
 from email import policy
 
@@ -18,8 +18,7 @@ STATE = {
 def test_kim_node_sends_letter_with_machine_readable_triage(monkeypatch):
     sent = {}
     monkeypatch.setattr(
-        kim_agent,
-        "send_kim_message",
+        "app.core.kim_outbox.send_kim_message",
         lambda subject, body, **kw: sent.update(subject=subject, body=body, **kw),
     )
 

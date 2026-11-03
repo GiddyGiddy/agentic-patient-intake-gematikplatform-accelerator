@@ -10,6 +10,9 @@ class Settings(BaseSettings):
     auth_disabled: bool = False
 
     fhir_base_url: str = "http://mock-kis-fhir:8080/fhir"
+    database_url: str = "postgresql+psycopg://intake:intake@postgres:5432/intake"
+    kim_retry_interval_s: int = 60
+    kim_max_attempts: int = 10
     # Dev: the same HAPI mock serves KIS and ePA. Prod: TI gateway/Konnektor URL of the ePA FHIR API.
     epa_base_url: str = "http://mock-kis-fhir:8080/fhir"
     epa_timeout_s: float = 10.0
@@ -21,6 +24,14 @@ class Settings(BaseSettings):
 
     llm_base_url: str = ""
     llm_model: str = "llama3.1"
+
+    cors_origins: str = "http://localhost:3000"  # comma separated
+    session_ttl_s: int = 3600  # idle lifetime of an intake session
+    consent_ttl_s: int = 3600  # lifetime of a granted TI-access consent
+    max_session_messages: int = 30
+    max_message_chars: int = 2000
+    rate_limit_per_min: int = 30
+    audit_log_file: str = ""  # empty = stdout only
 
 
 settings = Settings()

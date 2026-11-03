@@ -28,7 +28,17 @@ export default function ResultCard({ result, onRestart }) {
           </>
         )}
       </dl>
-      <p>{t("result.kim")}</p>
+      {result.medication_plan?.length > 0 && (
+        <>
+          <h3>{t("result.medication")}</h3>
+          <ul>
+            {result.medication_plan.map((m) => (
+              <li key={m}>{m}</li>
+            ))}
+          </ul>
+        </>
+      )}
+      {result.kim_sent ? <p>{t("result.kim")}</p> : <p role="alert">{t("result.kimFailed")}</p>}
       <button className="btn" onClick={onRestart}>
         {t("chat.restart")}
       </button>

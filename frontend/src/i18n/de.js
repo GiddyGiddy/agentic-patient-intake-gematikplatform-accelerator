@@ -64,6 +64,8 @@ const de = {
   "result.appointmentId": "Termin-ID",
   "result.kim": "Arztbrief wurde per KIM an Ihre behandelnde Ärztin oder Ihren Arzt gesendet.",
   "result.noTime": "Zeit wird von der Praxis bestätigt",
+  "result.medication": "Ihr Medikationsplan aus der ePA",
+  "result.kimFailed": "Der Arztbrief konnte noch nicht per KIM versendet werden. Die Praxis wird informiert.",
 
   "triage.Rot": "Sofort",
   "triage.Orange": "Sehr dringend",

@@ -3,7 +3,7 @@ import json
 import httpx
 
 from app.agents.state import IntakeState
-from app.core.kim_client import send_kim_message
+from app.core.kim_outbox import enqueue_and_send
 from config import settings
 
 
@@ -62,9 +62,11 @@ def kim_node(state: IntakeState) -> IntakeState:
         "slot_start": state.get("slot_start"),
         "medication_plan": state.get("medication_plan", []),
     }
-    send_kim_message(
+    # stored in the outbox first: if the KIM client module is down, the retry worker delivers it later
+    sent = enqueue_and_send(
+        state["patient_id"],
         "Arztbrief - Patientenaufnahme",
         letter,
-        attachments=[("triage.json", json.dumps(triage_record, ensure_ascii=False).encode())],
+        [("triage.json", json.dumps(triage_record, ensure_ascii=False))],
     )
-    return {"letter": letter, "kim_sent": True, "next_agent": "END"}
+    return {"letter": letter, "kim_sent": sent, "next_agent": "END"}

@@ -3,6 +3,7 @@ from datetime import datetime, timedelta, timezone
 from fhirpy import SyncFHIRClient
 
 from app.agents.state import IntakeState
+from app.core.audit import audit
 from config import settings
 
 # Earliest acceptable start per Manchester level: Rot/Orange/Gelb get acute slots, Grün/Blau standard ones
@@ -29,6 +30,17 @@ def _find_free_slot(client: SyncFHIRClient, earliest: datetime):
         return None
 
 
+def _patient_actor(client: SyncFHIRClient, patient_id: str) -> dict:
+    """Links the Appointment to the KIS Patient when it exists (HAPI enforces referential integrity)."""
+    actor = {"display": f"Patient {patient_id}"}
+    try:
+        if client.resources("Patient").search(_id=patient_id).limit(1).fetch():
+            actor["reference"] = f"Patient/{patient_id}"
+    except Exception:
+        pass
+    return actor
+
+
 def scheduling_node(state: IntakeState) -> IntakeState:
     client = SyncFHIRClient(settings.fhir_base_url)
     score = state.get("triage_score", "Grün")
@@ -51,7 +63,7 @@ def scheduling_node(state: IntakeState) -> IntakeState:
         "start": start,
         "end": end,
         "participant": [
-            {"actor": {"display": f"Patient {state['patient_id']}"}, "status": "accepted"}
+            {"actor": _patient_actor(client, state["patient_id"]), "status": "accepted"}
         ],
     }
     if slot_ref:
@@ -63,4 +75,11 @@ def scheduling_node(state: IntakeState) -> IntakeState:
         slot["status"] = "busy"
         slot.save()
 
+    audit(
+        "appointment_created",
+        state["patient_id"],
+        appointment_id=appt.id,
+        status=data["status"],
+        triage=score,
+    )
     return {"appointment_id": appt.id, "slot_start": start, "next_agent": "KIMAgent"}

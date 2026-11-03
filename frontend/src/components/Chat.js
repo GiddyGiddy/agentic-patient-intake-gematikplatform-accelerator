@@ -1,5 +1,5 @@
 import React, { useEffect, useRef, useState } from "react";
-import { sendChat } from "../services/api";
+import { resetSession, sendChat, setConsent } from "../services/api";
 import { t } from "../i18n";
 import { useTypewriter } from "../hooks/useTypewriter";
 import ConsentDialog from "./ConsentDialog";
@@ -53,44 +53,46 @@ export default function Chat({ token, onUnauthorized }) {
     logEnd.current?.scrollIntoView?.({ block: "end" });
   }, [messages, loading]);
 
-  async function call(payload) {
+  async function call(fn, apply = applyResult) {
     setLoading(true);
     setError(null);
     try {
-      const r = await sendChat(token, payload);
-      setState((s) => ({
-        ...s,
-        messages: r.reply
-          ? [...s.messages, { from: "agent", text: r.reply, fresh: true }]
-          : s.messages,
-        result: r,
-        pending: r.iam_required
-          ? { ...payload, triage_score: r.triage_score, anamnesis_summary: r.anamnesis_summary }
-          : null,
-        declined: false,
-      }));
+      apply(await fn());
+      return true;
     } catch (err) {
       if (err.status === 401) {
         onUnauthorized();
-        return;
+        return false;
       }
       setError({
-        payload,
+        retry: () => call(fn, apply),
         text: err.status === 0 ? t("chat.error.network") : t("chat.error.server", { status: err.status }),
       });
+      return false;
     } finally {
       setLoading(false);
     }
+  }
+
+  // The server owns triage and consent; the UI mirrors what it reports
+  function applyResult(r) {
+    setState((s) => ({
+      ...s,
+      messages: r.reply ? [...s.messages, { from: "agent", text: r.reply, fresh: true }] : s.messages,
+      result: r,
+      consent: Boolean(r.consent_granted),
+      pending: Boolean(r.iam_required),
+      declined: false,
+    }));
   }
 
   function submit(e) {
     e.preventDefault();
     const message = input.trim();
     if (!message || loading) return;
-    const history = messages.filter((m) => m.from === "patient").map((m) => m.text);
     setInput("");
     setState((s) => ({ ...s, messages: [...s.messages, { from: "patient", text: message }] }));
-    call({ message, history, consent_granted: consent });
+    call(() => sendChat(token, message));
   }
 
   function decide(granted) {
@@ -98,26 +100,30 @@ export default function Chat({ token, onUnauthorized }) {
       setState((s) => ({ ...s, declined: true }));
       return;
     }
-    const payload = { ...pending, consent_granted: true };
-    setState((s) => ({ ...s, consent: true, declined: false, pending: null }));
-    call(payload);
+    call(() => setConsent(token, true));
   }
 
-  function revoke() {
-    setState((s) => ({
-      ...s,
-      consent: false,
-      messages: [...s.messages, { from: "system", text: t("consent.revoked") }],
-    }));
+  async function revoke() {
+    const ok = await call(() => setConsent(token, false));
+    if (ok) {
+      setState((s) => ({
+        ...s,
+        messages: [...s.messages, { from: "system", text: t("consent.revoked") }],
+      }));
+    }
   }
 
   function restart() {
-    setState(EMPTY);
-    setInput("");
-    setError(null);
+    call(
+      () => resetSession(token),
+      () => {
+        setState(EMPTY);
+        setInput("");
+      }
+    );
   }
 
-  const done = Boolean(result?.kim_sent);
+  const done = Boolean(result?.appointment_id);
   const showInput = !pending && !declined && !done;
 
   return (
@@ -147,7 +153,7 @@ export default function Chat({ token, onUnauthorized }) {
       {error && (
         <div className="error" role="alert">
           <span>{error.text}</span>
-          <button className="btn" onClick={() => call(error.payload)} disabled={loading}>
+          <button className="btn" onClick={error.retry} disabled={loading}>
             {t("chat.retry")}
           </button>
         </div>
@@ -168,7 +174,9 @@ export default function Chat({ token, onUnauthorized }) {
         </section>
       )}
 
-      {pending && !declined && <ConsentDialog message={result?.iam_message} onDecision={decide} />}
+      {pending && !declined && !loading && (
+        <ConsentDialog message={result?.iam_message} onDecision={decide} />
+      )}
 
       {done && <ResultCard result={result} onRestart={restart} />}
 

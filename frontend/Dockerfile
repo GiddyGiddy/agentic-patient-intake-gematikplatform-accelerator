@@ -1,4 +1,4 @@
-FROM node:20-alpine AS build
+FROM docker.io/library/node:20-alpine AS build
 WORKDIR /app
 COPY package.json package-lock.json ./
 RUN npm ci
@@ -9,7 +9,7 @@ ARG REACT_APP_OIDC_ISSUER=http://localhost:8081
 ARG REACT_APP_OIDC_CLIENT_ID=patient-intake-frontend
 RUN npm run build
 
-FROM nginx:1.27-alpine
+FROM docker.io/library/nginx:1.27-alpine
 COPY nginx.conf /etc/nginx/conf.d/default.conf
 COPY --from=build /app/build /usr/share/nginx/html
 EXPOSE 80

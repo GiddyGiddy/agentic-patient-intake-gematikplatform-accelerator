@@ -11,6 +11,8 @@ YELLOW = ("fieber", "erbrechen", "fever", "vomiting")
 GREEN = ("schmerz", "husten", "pain", "cough")
 
 MIN_PATIENT_MESSAGES = 2  # non-red cases need at least this many answers before triage
+MAX_PATIENT_MESSAGES = 6  # stop asking follow-up questions after this many answers
+FALLBACK_QUESTION = "Danke. Seit wann bestehen die Beschwerden und wie stark sind sie?"
 
 
 def _keyword_score(text: str) -> str:
@@ -49,18 +51,46 @@ def _llm_assess(text: str) -> dict | None:
     return None
 
 
+def _llm_followup(text: str) -> str | None:
+    """Returns the next anamnesis question, or None if the LLM considers the anamnesis complete/unavailable."""
+    if not settings.llm_base_url:
+        return None
+    prompt = (
+        "Du fuehrst eine strukturierte Anamnese (Beschwerden, Beginn, Staerke, Vorerkrankungen, "
+        "Medikamente). Entscheide anhand der bisherigen Patientenangaben, ob noch eine wichtige "
+        "Information fehlt. Antworte nur als JSON: "
+        '{"complete": true|false, "question": "eine kurze Frage auf Deutsch"}\n\nPatientenangaben:\n'
+        + text
+    )
+    try:
+        r = httpx.post(
+            f"{settings.llm_base_url}/api/generate",
+            json={"model": settings.llm_model, "stream": False, "format": "json", "prompt": prompt},
+            timeout=60,
+        )
+        r.raise_for_status()
+        data = json.loads(r.json()["response"])
+        question = data.get("question")
+        if data.get("complete") is False and isinstance(question, str) and question.strip():
+            return question.strip()
+    except (httpx.HTTPError, ValueError, KeyError, AttributeError):
+        pass
+    return None
+
+
 def intake_node(state: IntakeState) -> IntakeState:
     messages = state.get("messages", [])
     text = " ".join(messages)
     keyword = _keyword_score(text)
 
-    enough = keyword == "Rot" or len(messages) >= MIN_PATIENT_MESSAGES
-    if not enough:
-        return {
-            "reply": "Danke. Seit wann bestehen die Beschwerden und wie stark sind sie?",
-            "next_agent": "END",
-        }
-
+    if keyword != "Rot":
+        question = None
+        if len(messages) < MIN_PATIENT_MESSAGES:
+            question = _llm_followup(text) or FALLBACK_QUESTION
+        elif len(messages) < MAX_PATIENT_MESSAGES:
+            question = _llm_followup(text)
+        if question:
+            return {"reply": question, "next_agent": "END"}
     llm = _llm_assess(text)
     # the LLM may raise but never lower what the safety keywords flagged
     score = _more_urgent(keyword, llm["triage_score"]) if llm else keyword

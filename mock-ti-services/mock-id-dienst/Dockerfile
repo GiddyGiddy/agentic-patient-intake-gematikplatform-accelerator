@@ -1,4 +1,4 @@
-FROM python:3.12-slim
+FROM docker.io/library/python:3.12-slim
 WORKDIR /srv
 RUN pip install --no-cache-dir fastapi uvicorn "pyjwt[crypto]" cryptography
 COPY main.py .

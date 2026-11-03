@@ -1,4 +1,4 @@
-# Agentic Patient Intake – gematik Accelerator
+﻿# Agentic Patient Intake – gematik Accelerator
 
 Agentic patient intake (anamnesis, triage, ePA consent, FHIR scheduling, KIM letter) built with FastAPI + LangGraph, with local mocks for the Telematikinfrastruktur (TI).
 
@@ -6,7 +6,7 @@ Agentic patient intake (anamnesis, triage, ePA consent, FHIR scheduling, KIM let
 
 ```powershell
 Copy-Item .env.example .env
-docker compose up --build
+podman compose up --build
 ```
 
 | Service | URL |
@@ -16,7 +16,7 @@ docker compose up --build
 | Mock ID-Dienst | http://localhost:8081/.well-known/openid-configuration |
 | Mock KIS (HAPI FHIR) | http://localhost:8080/fhir |
 | Mock KIM-CM (SMTP) | localhost:2525 |
-| LLM (Ollama) | http://localhost:11434 (`docker compose exec llm ollama pull llama3.1`) |
+| LLM (Ollama) | http://localhost:11434 (`podman compose exec llm ollama pull llama3.1`) |
 
 Without a reachable LLM the intake agent uses a rule-based fallback.
 
@@ -42,7 +42,24 @@ npm run build    # production build
 ```
 
 Config is read at build time: `REACT_APP_API_URL`, `REACT_APP_OIDC_ISSUER`, `REACT_APP_OIDC_CLIENT_ID`.
-The Docker image builds the app and serves it with nginx (the values are passed as build args in `docker-compose.yml`).
+The container image builds the app and serves it with nginx (the values are passed as build args in `docker-compose.yml`).
+
+## Backend API
+
+All endpoints require the Gesundheits-ID bearer token. Conversation, triage and consent are kept
+**server-side** per patient (in-memory store, `app/core/session.py`); the client cannot set them.
+
+| Endpoint | Purpose |
+|---|---|
+| `POST /api/chat` `{message}` | Adds a patient message, runs the agent graph. Intake asks follow-up questions (LLM, rule-based fallback) until triage is set, then waits for consent. |
+| `POST /api/consent` `{granted}` | Grant resumes the workflow: ePA medication plan → FHIR Appointment in the KIS → KIM letter. Idempotent after completion. `granted:false` revokes. |
+| `DELETE /api/session` | Starts over / logout: drops conversation, triage and consent. |
+
+Errors: `502` TI service (KIS/ePA) unreachable (retry is safe, nothing is double-booked), `409` intake
+already completed or no active intake, `422` message too long, `429` rate limit. A failed KIM hand-over
+does not fail the run; the response has `kim_sent: false`.
+Every TI-relevant action (consent, ePA read, appointment, KIM) is written as a JSON line to the audit log
+with a pseudonymised patient id and no medical content.
 
 ## Local backend dev
 
@@ -51,3 +68,18 @@ cd backend
 pip install -r requirements.txt
 $env:AUTH_DISABLED="true"; uvicorn main:app --reload
 ```
+
+## Persistence (PostgreSQL)
+
+PostgreSQL is the only store (service postgres, volume pg-data; started with Podman via podman compose up --build). Schema is created on startup with create_all (no Alembic migrations yet).
+
+| Table | Content |
+|---|---|
+| intake_session | conversation, triage score, summary, result (per patient sub; idle sessions are purged) |
+| consent | durable consent records (scope, granted/expires/revoked, token jti); never deleted |
+| udit | pseudonymised audit events (no medical content) |
+| kim_outbox | Arztbrief + 	riage.json until delivered; retried every KIM_RETRY_INTERVAL_S; content wiped after sending |
+
+Not persisted: access tokens, ePA medication data, slots/appointments (these stay in the KIS/ePA).
+
+Limitations: the rate limiter is in memory per instance; a crash between the FHIR booking and the DB commit can leave a booking without session state. Tests use in-memory SQLite.

@@ -7,20 +7,25 @@ export class ApiError extends Error {
   }
 }
 
-export async function sendChat(token, payload) {
+async function request(token, method, path, body) {
   let res;
   try {
-    res = await fetch(`${config.apiUrl}/api/chat`, {
-      method: "POST",
+    res = await fetch(`${config.apiUrl}/api${path}`, {
+      method,
       headers: {
         "Content-Type": "application/json",
         Authorization: `Bearer ${token}`,
       },
-      body: JSON.stringify(payload),
+      body: body === undefined ? undefined : JSON.stringify(body),
     });
   } catch {
     throw new ApiError(0);
   }
   if (!res.ok) throw new ApiError(res.status);
-  return res.json();
+  return res.status === 204 ? null : res.json();
 }
+
+// Conversation, triage and consent live on the server; the client only sends decisions.
+export const sendChat = (token, message) => request(token, "POST", "/chat", { message });
+export const setConsent = (token, granted) => request(token, "POST", "/consent", { granted });
+export const resetSession = (token) => request(token, "DELETE", "/session");

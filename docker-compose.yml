@@ -21,17 +21,40 @@ services:
       - EPA_BASE_URL=http://mock-kis-fhir:8080/fhir
       - KIM_SMTP_HOST=mock-kim-cm
       - KIM_SMTP_PORT=2525
+      - DATABASE_URL=postgresql+psycopg://${POSTGRES_USER:-intake}:${POSTGRES_PASSWORD:-intake}@postgres:5432/${POSTGRES_DB:-intake}
     ports:
       - "${BACKEND_PORT:-8000}:8000"
     depends_on:
-      - mock-kim-cm
-      - mock-kis-fhir
-      - mock-id-dienst
+      postgres:
+        condition: service_healthy
+      mock-kim-cm:
+        condition: service_started
+      mock-kis-fhir:
+        condition: service_started
+      mock-id-dienst:
+        condition: service_started
+    networks:
+      - ti-network
+
+  # Single persistent store: sessions, consent records, audit log, KIM outbox
+  postgres:
+    image: docker.io/library/postgres:16-alpine
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER:-intake}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-intake}
+      POSTGRES_DB: ${POSTGRES_DB:-intake}
+    volumes:
+      - pg-data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-intake} -d ${POSTGRES_DB:-intake}"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
     networks:
       - ti-network
 
   llm:
-    image: ollama/ollama:latest
+    image: docker.io/ollama/ollama:latest
     ports:
       - "11434:11434"
     volumes:
@@ -43,7 +66,7 @@ services:
       - "8081:8081"
 
   mock-kis-fhir:
-    image: hapiproject/hapi:latest
+    image: docker.io/hapiproject/hapi:latest
     ports:
       - "8080:8080"
     networks:
@@ -54,7 +77,7 @@ services:
 
   # Seeds Patient, Slot and ePA MedicationStatement test data into the mock (KIS + ePA)
   mock-kis-seed:
-    image: python:3.12-alpine
+    image: docker.io/library/python:3.12-alpine
     volumes:
       - ./mock-ti-services/mock-kis-fhir/seed.py:/seed.py:ro
     command: ["python", "/seed.py"]
@@ -77,5 +100,6 @@ services:
 
 volumes:
   ollama-data:
+  pg-data:
 networks:
   ti-network:

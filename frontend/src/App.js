@@ -10,6 +10,7 @@ import {
   logout,
 } from "./auth/oidc";
 import { t } from "./i18n";
+import { resetSession } from "./services/api";
 
 export default function App() {
   const [session, setSession] = useState(getSession);
@@ -34,6 +35,16 @@ export default function App() {
   }, []);
 
   const expiresAt = session?.expiresAt;
+
+  // drop the server-side session (and with it the consent) before leaving
+  async function endSession() {
+    try {
+      await resetSession(session.accessToken);
+    } catch {
+      // best effort: the server session expires on its own
+    }
+    logout();
+  }
   useEffect(() => {
     if (!expiresAt) return undefined;
     const id = setTimeout(expire, Math.max(expiresAt - Date.now(), 0));
@@ -50,7 +61,7 @@ export default function App() {
         {session && (
           <div className="user">
             <span>{t("auth.loggedInAs", { sub: session.sub || "" })}</span>
-            <button className="btn btn-link" onClick={logout}>
+            <button className="btn btn-link" onClick={endSession}>
               {t("auth.logout")}
             </button>
           </div>

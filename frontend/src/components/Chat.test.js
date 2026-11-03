@@ -2,10 +2,12 @@ import React from "react";
 import { render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import Chat from "./Chat";
-import { ApiError, sendChat } from "../services/api";
+import { ApiError, resetSession, sendChat, setConsent } from "../services/api";
 
 jest.mock("../services/api", () => ({
   sendChat: jest.fn(),
+  setConsent: jest.fn(),
+  resetSession: jest.fn(),
   ApiError: class ApiError extends Error {
     constructor(status) {
       super(`Backend error ${status}`);
@@ -20,15 +22,18 @@ const RED_PENDING = {
   anamnesis_summary: "Brustschmerzen",
   iam_required: true,
   iam_message: "Bitte Zugriff freigeben.",
+  consent_granted: false,
 };
 const BOOKED = {
   reply: null,
   triage_score: "Rot",
   anamnesis_summary: "Brustschmerzen",
   iam_required: false,
+  consent_granted: true,
   appointment_id: "a1",
   slot_start: "2030-01-01T10:00:00Z",
   kim_sent: true,
+  medication_plan: ["Ramipril 5 mg (1-0-0)"],
 };
 
 async function send(text) {
@@ -39,39 +44,41 @@ async function send(text) {
 beforeEach(() => {
   sessionStorage.clear();
   sendChat.mockReset();
+  setConsent.mockReset();
+  resetSession.mockReset().mockResolvedValue(null);
 });
 
-test("emergency: banner, consent dialog, then resume with consent and show result", async () => {
-  sendChat.mockResolvedValueOnce(RED_PENDING).mockResolvedValueOnce(BOOKED);
+test("emergency: banner, consent dialog, then server-side consent resumes and shows the result", async () => {
+  sendChat.mockResolvedValueOnce(RED_PENDING);
+  setConsent.mockResolvedValueOnce(BOOKED);
   render(<Chat token="tok" onUnauthorized={jest.fn()} />);
 
   await send("Ich habe Brustschmerzen");
 
   expect(await screen.findByRole("dialog")).toBeInTheDocument();
   expect(screen.getByRole("link", { name: "112 anrufen" })).toHaveAttribute("href", "tel:112");
-  expect(sendChat).toHaveBeenCalledWith("tok", {
-    message: "Ich habe Brustschmerzen",
-    history: [],
-    consent_granted: false,
-  });
+  expect(sendChat).toHaveBeenCalledWith("tok", "Ich habe Brustschmerzen");
 
   await userEvent.click(screen.getByRole("button", { name: "Mit Gesundheits-ID freigeben" }));
 
   expect(await screen.findByRole("heading", { name: "Ihre Aufnahme ist abgeschlossen" })).toBeInTheDocument();
-  expect(sendChat).toHaveBeenLastCalledWith(
-    "tok",
-    expect.objectContaining({
-      consent_granted: true,
-      triage_score: "Rot",
-      anamnesis_summary: "Brustschmerzen",
-    })
-  );
+  expect(setConsent).toHaveBeenCalledWith("tok", true);
   expect(screen.getByText(/Rot – Sofort/)).toBeInTheDocument();
+  expect(screen.getByText("Ramipril 5 mg (1-0-0)")).toBeInTheDocument();
   expect(screen.getByText(/per KIM/)).toBeInTheDocument();
   expect(screen.queryByLabelText("Ihre Nachricht")).not.toBeInTheDocument();
 });
 
-test("declining shows feedback, sends nothing further and allows reconsidering", async () => {
+test("a failed KIM hand-over is announced", async () => {
+  sendChat.mockResolvedValueOnce(RED_PENDING);
+  setConsent.mockResolvedValueOnce({ ...BOOKED, kim_sent: false });
+  render(<Chat token="tok" onUnauthorized={jest.fn()} />);
+  await send("Brustschmerzen");
+  await userEvent.click(await screen.findByRole("button", { name: "Mit Gesundheits-ID freigeben" }));
+  expect(await screen.findByText(/noch nicht per KIM/)).toBeInTheDocument();
+});
+
+test("declining shows feedback, tells the server nothing and allows reconsidering", async () => {
   sendChat.mockResolvedValueOnce(RED_PENDING);
   render(<Chat token="tok" onUnauthorized={jest.fn()} />);
   await send("Brustschmerzen");
@@ -80,13 +87,13 @@ test("declining shows feedback, sends nothing further and allows reconsidering",
 
   expect(screen.getByText(/Keine Freigabe erteilt/)).toBeInTheDocument();
   expect(screen.queryByRole("dialog")).not.toBeInTheDocument();
-  expect(sendChat).toHaveBeenCalledTimes(1);
+  expect(setConsent).not.toHaveBeenCalled();
 
   await userEvent.click(screen.getByRole("button", { name: "Freigabe erneut prüfen" }));
   expect(screen.getByRole("dialog")).toBeInTheDocument();
 });
 
-test("follow-up question keeps the conversation going and sends patient history", async () => {
+test("follow-up questions only send the new message (history is server-side)", async () => {
   sendChat
     .mockResolvedValueOnce({ reply: "Seit wann?", iam_required: false })
     .mockResolvedValueOnce({ reply: "Danke.", triage_score: "Gelb", iam_required: true });
@@ -97,11 +104,7 @@ test("follow-up question keeps the conversation going and sends patient history"
   await send("seit drei Tagen");
 
   await screen.findByRole("dialog");
-  expect(sendChat).toHaveBeenLastCalledWith("tok", {
-    message: "seit drei Tagen",
-    history: ["Husten"],
-    consent_granted: false,
-  });
+  expect(sendChat).toHaveBeenLastCalledWith("tok", "seit drei Tagen");
   expect(screen.queryByRole("link", { name: "112 anrufen" })).not.toBeInTheDocument();
 });
 
@@ -115,6 +118,18 @@ test("errors are announced and can be retried", async () => {
 
   await waitFor(() => expect(screen.getAllByText("Hallo")).toHaveLength(2));
   expect(screen.queryByRole("alert")).not.toBeInTheDocument();
+});
+
+test("a TI outage during consent can be retried", async () => {
+  sendChat.mockResolvedValueOnce(RED_PENDING);
+  setConsent.mockRejectedValueOnce(new ApiError(502)).mockResolvedValueOnce(BOOKED);
+  render(<Chat token="tok" onUnauthorized={jest.fn()} />);
+  await send("Brustschmerzen");
+  await userEvent.click(await screen.findByRole("button", { name: "Mit Gesundheits-ID freigeben" }));
+
+  expect(await screen.findByText(/Code 502/)).toBeInTheDocument();
+  await userEvent.click(screen.getByRole("button", { name: "Erneut versuchen" }));
+  expect(await screen.findByRole("heading", { name: "Ihre Aufnahme ist abgeschlossen" })).toBeInTheDocument();
 });
 
 test("network failure shows a connection message", async () => {
@@ -133,8 +148,9 @@ test("a 401 from the backend triggers re-login", async () => {
   expect(onUnauthorized).toHaveBeenCalled();
 });
 
-test("consent can be revoked after granting", async () => {
-  sendChat.mockResolvedValueOnce(RED_PENDING).mockResolvedValueOnce(BOOKED);
+test("consent can be revoked after granting and the server is told", async () => {
+  sendChat.mockResolvedValueOnce(RED_PENDING);
+  setConsent.mockResolvedValueOnce(BOOKED).mockResolvedValueOnce({ ...BOOKED, consent_granted: false });
   render(<Chat token="tok" onUnauthorized={jest.fn()} />);
   await send("Brustschmerzen");
   await userEvent.click(await screen.findByRole("button", { name: "Mit Gesundheits-ID freigeben" }));
@@ -142,11 +158,12 @@ test("consent can be revoked after granting", async () => {
 
   await userEvent.click(screen.getByRole("button", { name: "Freigabe widerrufen" }));
 
-  expect(screen.queryByText("Datenfreigabe erteilt")).not.toBeInTheDocument();
+  await waitFor(() => expect(screen.queryByText("Datenfreigabe erteilt")).not.toBeInTheDocument());
+  expect(setConsent).toHaveBeenLastCalledWith("tok", false);
   expect(screen.getByText(/Freigabe wurde widerrufen/)).toBeInTheDocument();
 });
 
-test("conversation survives a reload and restart clears it", async () => {
+test("conversation survives a reload and restart resets the server session", async () => {
   sendChat.mockResolvedValueOnce({ reply: "Seit wann?", iam_required: false });
   const { unmount } = render(<Chat token="tok" onUnauthorized={jest.fn()} />);
   await send("Husten");
@@ -158,5 +175,6 @@ test("conversation survives a reload and restart clears it", async () => {
   expect(screen.getByText("Seit wann?")).toBeInTheDocument();
 
   await userEvent.click(screen.getByRole("button", { name: "Neues Gespräch" }));
-  expect(screen.queryByText("Husten")).not.toBeInTheDocument();
+  await waitFor(() => expect(screen.queryByText("Husten")).not.toBeInTheDocument());
+  expect(resetSession).toHaveBeenCalledWith("tok");
 });
