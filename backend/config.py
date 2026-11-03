@@ -10,6 +10,9 @@ class Settings(BaseSettings):
     auth_disabled: bool = False
 
     fhir_base_url: str = "http://mock-kis-fhir:8080/fhir"
+    # Dev: the same HAPI mock serves KIS and ePA. Prod: TI gateway/Konnektor URL of the ePA FHIR API.
+    epa_base_url: str = "http://mock-kis-fhir:8080/fhir"
+    epa_timeout_s: float = 10.0
 
     kim_smtp_host: str = "mock-kim-cm"
     kim_smtp_port: int = 2525

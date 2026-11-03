@@ -24,9 +24,10 @@ def route_next_step(state: IntakeState) -> str:
 
 
 def _entry(state: IntakeState) -> str:
-    """Resumed run: intake already done and consent now granted -> skip straight ahead."""
+    """Resumed run: intake already done and consent now granted -> re-enter at the ConsentAgent
+    (reads the ePA) which then routes on to scheduling."""
     if state.get("triage_score") and state.get("consent_granted"):
-        return "scheduling"
+        return "consent"
     return "intake"
 
 
@@ -38,7 +39,7 @@ def build_graph():
     g.add_node("kim", kim_node)
 
     targets = {*NODES.values(), END}
-    g.set_conditional_entry_point(_entry, {"intake": "intake", "scheduling": "scheduling"})
+    g.set_conditional_entry_point(_entry, {"intake": "intake", "consent": "consent"})
     for name in ("intake", "consent"):
         g.add_conditional_edges(name, route_next_step, {t: t for t in targets})
     g.add_edge("scheduling", "kim")

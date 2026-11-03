@@ -59,3 +59,11 @@ def test_send_kim_message_builds_smtp_mail_with_attachment(monkeypatch):
     attachment = next(msg.iter_attachments())
     assert attachment.get_filename() == "triage.json"
     assert json.loads(attachment.get_content()) == {"a": 1}
+
+
+def test_template_letter_contains_medication_plan():
+    text = kim_agent._template_letter(
+        {"patient_id": "X1", "medication_plan": ["Ramipril 5 mg"], "epa_available": True}
+    )
+    assert "Ramipril 5 mg" in text
+    assert "nicht erreichbar" in kim_agent._template_letter({"patient_id": "X1", "epa_available": False})

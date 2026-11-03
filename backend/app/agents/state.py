@@ -8,6 +8,12 @@ class IntakeState(TypedDict, total=False):
     patient_id: str
     messages: list[str]
     consent_granted: bool
+    # patient's Gesundheits-ID token, forwarded to the ePA; never returned to the client
+    access_token: str
+
+    # ConsentAgent: data read from the ePA after consent
+    medication_plan: list[str]
+    epa_available: bool
 
     # IntakeAgent
     anamnesis_summary: str

@@ -1,8 +1,9 @@
 from fastapi import APIRouter, Depends
-from pydantic import BaseModel
+from fastapi.security import HTTPAuthorizationCredentials
 
 from app.agents.graph import intake_graph
-from app.core.security import get_current_user
+from app.core.security import _bearer, get_current_user
+from pydantic import BaseModel
 
 router = APIRouter()
 
@@ -17,12 +18,17 @@ class ChatRequest(BaseModel):
 
 
 @router.post("/chat")
-def chat(req: ChatRequest, user: dict = Depends(get_current_user)):
+def chat(
+    req: ChatRequest,
+    user: dict = Depends(get_current_user),
+    creds: HTTPAuthorizationCredentials | None = Depends(_bearer),
+):
     """Runs one pass of the agent graph for the authenticated patient."""
     state = {
         "patient_id": user["sub"],
         "messages": [*req.history, req.message],
         "consent_granted": req.consent_granted,
+        "access_token": creds.credentials if creds else "",
     }
     if req.triage_score:
         state["triage_score"] = req.triage_score
@@ -36,5 +42,7 @@ def chat(req: ChatRequest, user: dict = Depends(get_current_user)):
         "iam_message": result.get("iam_message"),
         "appointment_id": result.get("appointment_id"),
         "slot_start": result.get("slot_start"),
+        "medication_plan": result.get("medication_plan", []),
+        "epa_available": result.get("epa_available"),
         "kim_sent": result.get("kim_sent", False),
     }

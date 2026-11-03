@@ -73,3 +73,17 @@ def test_chat_resumes_after_consent_through_scheduling_and_kim(client, stub_ti):
 def test_chat_requires_token_when_auth_enabled(client, monkeypatch):
     monkeypatch.setattr(settings, "auth_disabled", False)
     assert client.post("/api/chat", json={"message": "hi"}).status_code == 401
+
+
+def test_resume_returns_epa_medication_plan(client, stub_ti):
+    body = client.post(
+        "/api/chat",
+        json={
+            "message": "Brustschmerzen",
+            "consent_granted": True,
+            "triage_score": "Rot",
+            "anamnesis_summary": "x",
+        },
+    ).json()
+    assert body["medication_plan"] == ["Ramipril 5 mg"]
+    assert body["epa_available"] is True

@@ -14,12 +14,19 @@ services:
     build: ./backend
     container_name: agentic_backend
     environment:
-      - OLLAMA_HOST=http://ollama:11434
-      - FHIR_BASE_URL=http://mock-fhir-server:8080/fhir
-      - KIM_CM_HOST=mock-kim-cm
-      - KIM_CM_PORT=25
+      - OIDC_ISSUER=http://mock-id-dienst:8081
+      - OIDC_JWKS_URL=http://mock-id-dienst:8081/jwks
+      - LLM_BASE_URL=http://llm:11434
+      - FHIR_BASE_URL=http://mock-kis-fhir:8080/fhir
+      - EPA_BASE_URL=http://mock-kis-fhir:8080/fhir
+      - KIM_SMTP_HOST=mock-kim-cm
+      - KIM_SMTP_PORT=2525
+    ports:
+      - "${BACKEND_PORT:-8000}:8000"
     depends_on:
       - mock-kim-cm
+      - mock-kis-fhir
+      - mock-id-dienst
     networks:
       - ti-network
 
@@ -39,16 +46,32 @@ services:
     image: hapiproject/hapi:latest
     ports:
       - "8080:8080"
+    networks:
+      - ti-network
     environment:
       hapi.fhir.fhir_version: R4
       hapi.fhir.allow_external_references: "true"
+
+  # Seeds Patient, Slot and ePA MedicationStatement test data into the mock (KIS + ePA)
+  mock-kis-seed:
+    image: python:3.12-alpine
+    volumes:
+      - ./mock-ti-services/mock-kis-fhir/seed.py:/seed.py:ro
+    command: ["python", "/seed.py"]
+    environment:
+      FHIR_BASE_URL: http://mock-kis-fhir:8080/fhir
+    depends_on:
+      - mock-kis-fhir
+    networks:
+      - ti-network
+    restart: "no"
 
  # NEU: Das simulierte KIM-Clientmodul
   mock-kim-cm:
     build: ./mock-ti-services/mock-kim-cm
     container_name: mock_kim_client_module
     ports:
-      - "1025:25" # Mappt den internen Port 25 auf Port 1025 des Host-Rechners (zum Debuggen)
+      - "2525:2525" # SMTP port of the mock (see smtp_server.py), exposed for debugging
     networks:
       - ti-network
 
