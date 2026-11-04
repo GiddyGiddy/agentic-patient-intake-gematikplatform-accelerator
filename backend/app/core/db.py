@@ -84,12 +84,20 @@ def configure(url: str | None = None) -> None:
 
 
 def init_db(retries: int = 30, delay_s: float = 2.0) -> None:
-    """Creates the schema; waits for the database to accept connections (container start order)."""
+    """Waits for the database to accept connections (container start order).
+
+    With DB_AUTO_CREATE=true (dev/tests) it also creates the schema. In production the schema is owned
+    by Alembic; the service then only verifies that migrations were applied.
+    """
     if _engine is None:
         configure()
     for attempt in range(retries):
         try:
-            Base.metadata.create_all(_engine)
+            if settings.db_auto_create:
+                Base.metadata.create_all(_engine)
+            else:
+                with _engine.connect() as conn:
+                    conn.execute(select(1))
             return
         except Exception:
             if attempt == retries - 1:

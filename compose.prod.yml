@@ -36,6 +36,7 @@ services:
     env_file: ${PROD_ENV_FILE:-/etc/intake/prod.env}
     environment:
       AUTH_DISABLED: "false"
+      DB_AUTO_CREATE: "false"   # schema is owned by Alembic (deploy.sh runs `alembic upgrade head`)
     volumes:
       # SMC-B / HSM-B client certificate for the real TI gateway, read-only
       - ${SMCB_CERT_DIR:-/etc/intake/smcb}:/run/smcb:ro
