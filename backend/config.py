@@ -1,4 +1,4 @@
-from pydantic_settings import BaseSettings, SettingsConfigDict
+﻿from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
 class Settings(BaseSettings):
@@ -16,6 +16,9 @@ class Settings(BaseSettings):
     # Dev: the same HAPI mock serves KIS and ePA. Prod: TI gateway/Konnektor URL of the ePA FHIR API.
     epa_base_url: str = "http://mock-kis-fhir:8080/fhir"
     epa_timeout_s: float = 10.0
+    # KIS/TI gateway calls of the scheduling agent: (connect, read) seconds; a blocked HSM/SMC-B must not hang the run
+    fhir_connect_timeout_s: float = 2.0
+    fhir_read_timeout_s: float = 8.0
 
     kim_smtp_host: str = "mock-kim-cm"
     kim_smtp_port: int = 2525

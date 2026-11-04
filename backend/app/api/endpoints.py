@@ -39,6 +39,7 @@ def _view(session: IntakeSession, reply: str | None = None, iam_message: str | N
         "kim_sent": r.get("kim_sent", False),
         "medication_plan": r.get("medication_plan", []),
         "epa_available": r.get("epa_available"),
+        "scheduling_failed": False,
     }
 
 
@@ -65,7 +66,9 @@ def _run(sub: str, token: str, session: IntakeSession) -> dict:
     for key in ("appointment_id", "slot_start", "kim_sent", "medication_plan", "epa_available"):
         if key in result:
             session.result[key] = result[key]
-    return _view(session, result.get("reply"), result.get("iam_message"))
+    view = _view(session, result.get("reply"), result.get("iam_message"))
+    view["scheduling_failed"] = bool(result.get("scheduling_failed"))
+    return view
 
 
 def _token(creds: HTTPAuthorizationCredentials | None) -> str:

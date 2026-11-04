@@ -39,7 +39,7 @@ def test_kim_failure_does_not_fail_the_run(monkeypatch):
 
 def test_appointment_references_existing_patient(monkeypatch):
     client = FakeClient([FakeResource(id="s1", start="2030-01-01T10:00:00Z", end="2030-01-01T10:20:00Z")])
-    monkeypatch.setattr(scheduling_agent, "SyncFHIRClient", lambda url: client)
+    monkeypatch.setattr(scheduling_agent, "SyncFHIRClient", lambda url, **kw: client)
     scheduling_agent.scheduling_node({"patient_id": "X1", "triage_score": "Gelb"})
     actor = client.created[0]["participant"][0]["actor"]
     assert actor["reference"] == "Patient/X1"
