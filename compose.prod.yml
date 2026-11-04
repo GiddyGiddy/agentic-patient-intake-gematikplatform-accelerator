@@ -10,7 +10,7 @@
 
 services:
   proxy:
-    image: docker.io/library/nginx:1.27-alpine
+    image: docker.io/library/nginx:stable-alpine
     restart: unless-stopped
     ports:
       - "443:443"

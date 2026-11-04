@@ -9,7 +9,8 @@ ARG REACT_APP_OIDC_ISSUER=http://localhost:8081
 ARG REACT_APP_OIDC_CLIENT_ID=patient-intake-frontend
 RUN npm run build
 
-FROM docker.io/library/nginx:1.27-alpine
+FROM docker.io/library/nginx:stable-alpine
+RUN apk upgrade --no-cache
 COPY nginx.conf /etc/nginx/conf.d/default.conf
 COPY --from=build /app/build /usr/share/nginx/html
 EXPOSE 80
