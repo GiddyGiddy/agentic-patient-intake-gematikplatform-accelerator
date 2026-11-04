@@ -1,9 +1,9 @@
-from langgraph.graph import END, StateGraph
+﻿from langgraph.graph import END, StateGraph
 
 from app.agents.consent_agent import consent_node
 from app.agents.intake_agent import intake_node
 from app.agents.kim_agent import kim_node
-from app.agents.scheduling_agent import scheduling_node
+from app.agents.scheduling_agent import error_handler_node, scheduling_node
 from app.agents.state import IntakeState
 
 NODES = {
@@ -37,12 +37,19 @@ def build_graph():
     g.add_node("consent", consent_node)
     g.add_node("scheduling", scheduling_node)
     g.add_node("kim", kim_node)
+    g.add_node("error_handler", error_handler_node)
 
     targets = {*NODES.values(), END}
     g.set_conditional_entry_point(_entry, {"intake": "intake", "consent": "consent"})
     for name in ("intake", "consent"):
         g.add_conditional_edges(name, route_next_step, {t: t for t in targets})
-    g.add_edge("scheduling", "kim")
+    # SchedulingAgent: normal path -> KIM; infrastructure failure -> ErrorHandler
+    g.add_conditional_edges(
+        "scheduling",
+        lambda s: "error_handler" if s.get("next_agent") == "ErrorHandler" else "kim",
+        {"kim": "kim", "error_handler": "error_handler"},
+    )
+    g.add_edge("error_handler", END)
     g.add_edge("kim", END)
     return g.compile()
 

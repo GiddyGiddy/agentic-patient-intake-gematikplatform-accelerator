@@ -1,4 +1,4 @@
-from datetime import datetime, timedelta, timezone
+﻿from datetime import datetime, timedelta, timezone
 
 import pytest
 
@@ -51,7 +51,7 @@ class FakeClient:
 
 def _use(monkeypatch, slots):
     client = FakeClient(slots)
-    monkeypatch.setattr(scheduling_agent, "SyncFHIRClient", lambda url: client)
+    monkeypatch.setattr(scheduling_agent, "SyncFHIRClient", lambda url, **kw: client)
     return client
 
 

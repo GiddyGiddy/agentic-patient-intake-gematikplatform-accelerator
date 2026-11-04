@@ -1,10 +1,15 @@
+﻿import logging
 from datetime import datetime, timedelta, timezone
 
+import requests
 from fhirpy import SyncFHIRClient
+from fhirpy.base.exceptions import AuthorizationError, BaseFHIRError, ForbiddenError
 
 from app.agents.state import IntakeState
 from app.core.audit import audit
 from config import settings
+
+log = logging.getLogger(__name__)
 
 # Earliest acceptable start per Manchester level: Rot/Orange/Gelb get acute slots, Grün/Blau standard ones
 _EARLIEST = {
@@ -17,17 +22,15 @@ _EARLIEST = {
 
 
 def _find_free_slot(client: SyncFHIRClient, earliest: datetime):
-    try:
-        slots = (
-            client.resources("Slot")
-            .search(status="free", start__ge=earliest.isoformat())
-            .sort("start")
-            .limit(1)
-            .fetch()
-        )
-        return slots[0] if slots else None
-    except Exception:
-        return None
+    # errors propagate: an outage must not look like "no free slot"
+    slots = (
+        client.resources("Slot")
+        .search(status="free", start__ge=earliest.isoformat())
+        .sort("start")
+        .limit(1)
+        .fetch()
+    )
+    return slots[0] if slots else None
 
 
 def _patient_actor(client: SyncFHIRClient, patient_id: str) -> dict:
@@ -41,8 +44,11 @@ def _patient_actor(client: SyncFHIRClient, patient_id: str) -> dict:
     return actor
 
 
-def scheduling_node(state: IntakeState) -> IntakeState:
-    client = SyncFHIRClient(settings.fhir_base_url)
+def _book(state: IntakeState) -> IntakeState:
+    client = SyncFHIRClient(
+        settings.fhir_base_url,
+        requests_config={"timeout": (settings.fhir_connect_timeout_s, settings.fhir_read_timeout_s)},
+    )
     score = state.get("triage_score", "Grün")
     earliest = datetime.now(timezone.utc) + _EARLIEST.get(score, timedelta(days=2))
 
@@ -83,3 +89,40 @@ def scheduling_node(state: IntakeState) -> IntakeState:
         triage=score,
     )
     return {"appointment_id": appt.id, "slot_start": start, "next_agent": "KIMAgent"}
+
+
+def _error_code(exc: Exception) -> str:
+    if isinstance(exc, requests.Timeout):
+        return "GATEWAY_TIMEOUT"
+    if isinstance(exc, (requests.ConnectionError, OSError)):
+        return "GATEWAY_CONNECTION_FAILED"
+    if isinstance(exc, (AuthorizationError, ForbiddenError)):
+        return "GATEWAY_AUTH_ERROR"  # e.g. SMC-B certificate invalid/expired
+    if isinstance(exc, (BaseFHIRError, requests.RequestException)):
+        return "GATEWAY_ERROR"
+    raise exc  # programming errors are not infrastructure failures
+
+
+def scheduling_node(state: IntakeState) -> IntakeState:
+    """Books the appointment. Infrastructure failures (KIS/TI gateway down, timeout, SMC-B/certificate
+    errors) do not crash the run: they are recorded in the state and routed to the ErrorHandler."""
+    try:
+        return _book(state)
+    except Exception as exc:
+        code = _error_code(exc)
+        log.warning("scheduling failed: %s (%s)", code, type(exc).__name__)
+        return {"scheduling_error": code, "next_agent": "ErrorHandler"}
+
+
+FALLBACK_MESSAGE = (
+    "Aufgrund einer vorübergehenden technischen Störung an den TI-Schnittstellen konnten wir Ihren "
+    "Termin nicht automatisch eintragen. Das Praxisteam wurde informiert und bucht den Termin manuell. "
+    "Sie können es auch später erneut versuchen."
+)
+
+
+def error_handler_node(state: IntakeState) -> IntakeState:
+    """Controlled fallback: friendly message to the patient (no technical details), alert for the clinic IT."""
+    code = state.get("scheduling_error", "UNKNOWN")
+    audit("scheduling_failed", state["patient_id"], error=code, triage=state.get("triage_score"), alert=True)
+    return {"reply": FALLBACK_MESSAGE, "scheduling_failed": True, "next_agent": "END"}
