@@ -1,0 +1,117 @@
+name: CD
+
+# Runs after CI succeeded on main. Images are built once, tagged with the commit SHA,
+# pushed to the on-prem registry and signed. Staging deploys automatically; production
+# waits for approval by the reviewers configured on the GitHub Environment "production".
+on:
+  workflow_run:
+    workflows: [CI]
+    types: [completed]
+    branches: [main]
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: "Existing image tag to (re)deploy, e.g. a previous SHA. Empty = build current HEAD."
+        required: false
+
+permissions:
+  contents: read
+
+concurrency:
+  group: cd-${{ github.ref }}
+  cancel-in-progress: false
+
+env:
+  REGISTRY: ${{ vars.REGISTRY }}            # e.g. registry.klinik.local/intake
+  IMAGE_TAG: ${{ inputs.tag || github.event.workflow_run.head_sha || github.sha }}
+
+jobs:
+  build:
+    if: ${{ github.event_name == 'workflow_dispatch' || github.event.workflow_run.conclusion == 'success' }}
+    runs-on: [self-hosted, onprem]
+    outputs:
+      tag: ${{ steps.tag.outputs.tag }}
+    strategy:
+      fail-fast: true
+      matrix:
+        include:
+          - name: backend
+            context: backend
+          - name: frontend
+            context: frontend
+          - name: mock-ti-gateway
+            context: mock-ti-services/mock-ti-gateway
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.workflow_run.head_sha || github.sha }}
+
+      - id: tag
+        run: echo "tag=${IMAGE_TAG:0:12}" >> "$GITHUB_OUTPUT"
+
+      - name: Skip build when redeploying an existing tag
+        id: skip
+        run: echo "skip=${{ inputs.tag != '' }}" >> "$GITHUB_OUTPUT"
+
+      - name: Registry login
+        if: steps.skip.outputs.skip != 'true'
+        run: echo "${{ secrets.REGISTRY_PASSWORD }}" | docker login "${REGISTRY%%/*}" -u "${{ secrets.REGISTRY_USER }}" --password-stdin
+
+      - name: Build and push
+        if: steps.skip.outputs.skip != 'true'
+        run: |
+          IMG="$REGISTRY/${{ matrix.name }}:${{ steps.tag.outputs.tag }}"
+          docker build ${{ matrix.name == 'frontend' && format('--build-arg REACT_APP_API_URL={0} --build-arg REACT_APP_OIDC_ISSUER={1} --build-arg REACT_APP_OIDC_CLIENT_ID={2}', vars.PROD_API_URL, vars.PROD_OIDC_ISSUER, vars.PROD_OIDC_CLIENT_ID) || '' }} \
+            --label org.opencontainers.image.revision=${{ github.sha }} \
+            -t "$IMG" ${{ matrix.context }}
+          docker push "$IMG"
+
+      - name: SBOM
+        if: steps.skip.outputs.skip != 'true'
+        uses: anchore/sbom-action@v0
+        with:
+          image: ${{ env.REGISTRY }}/${{ matrix.name }}:${{ steps.tag.outputs.tag }}
+          artifact-name: sbom-${{ matrix.name }}.spdx.json
+
+      - name: Sign image (cosign, key-based so it works offline)
+        if: steps.skip.outputs.skip != 'true'
+        uses: sigstore/cosign-installer@v3
+      - if: steps.skip.outputs.skip != 'true'
+        env:
+          COSIGN_PRIVATE_KEY: ${{ secrets.COSIGN_PRIVATE_KEY }}
+          COSIGN_PASSWORD: ${{ secrets.COSIGN_PASSWORD }}
+        run: cosign sign --yes --key env://COSIGN_PRIVATE_KEY "$REGISTRY/${{ matrix.name }}:${{ steps.tag.outputs.tag }}"
+
+  deploy-staging:
+    needs: build
+    runs-on: [self-hosted, onprem, staging]
+    environment: staging
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.workflow_run.head_sha || github.sha }}
+      - name: Deploy to staging
+        run: ./deploy/deploy.sh staging "${{ needs.build.outputs.tag }}"
+      - name: Smoke tests
+        run: ./deploy/smoke-test.sh "${{ vars.STAGING_URL }}"
+
+  deploy-production:
+    needs: [build, deploy-staging]
+    runs-on: [self-hosted, onprem, production]
+    environment: production        # required reviewers = manual approval gate
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.workflow_run.head_sha || github.sha }}
+      - uses: sigstore/cosign-installer@v3
+      - name: Verify image signatures
+        run: |
+          for i in backend frontend; do
+            cosign verify --key env://COSIGN_PUBLIC_KEY "$REGISTRY/$i:${{ needs.build.outputs.tag }}"
+          done
+        env:
+          COSIGN_PUBLIC_KEY: ${{ vars.COSIGN_PUBLIC_KEY }}
+      - name: Deploy (backs up DB, health-checks, rolls back on failure)
+        run: ./deploy/deploy.sh production "${{ needs.build.outputs.tag }}"
+      - name: Smoke tests
+        run: ./deploy/smoke-test.sh "${{ vars.PROD_URL }}"

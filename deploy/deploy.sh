@@ -45,7 +45,7 @@ backup_db() {
 }
 
 rotate_backups() {
-  ls -1t "$BACKUP_DIR"/pre-*.dump 2>/dev/null | tail -n +"$((KEEP_BACKUPS + 1))" | xargs -r rm -f --
+  { ls -1t "$BACKUP_DIR"/pre-*.dump 2>/dev/null || true; } | tail -n +"$((KEEP_BACKUPS + 1))" | xargs -r rm -f --
 }
 
 rollback() {
