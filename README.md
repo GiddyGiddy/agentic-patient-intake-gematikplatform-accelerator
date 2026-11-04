@@ -36,7 +36,6 @@ The backend, database and LLM run in the clinic's own data center because the da
 ## Start
 
 ```powershell
-Copy-Item .env.example .env
 podman compose up --build
 ```
 
@@ -121,7 +120,7 @@ npm test         # Jest + Testing Library
 npm run build
 ```
 
-Frontend config is read at build time: `REACT_APP_API_URL`, `REACT_APP_OIDC_ISSUER`, `REACT_APP_OIDC_CLIENT_ID` (passed as build args in `docker-compose.yml`). See `.env.example` for all backend settings.
+Frontend config is read at build time: `REACT_APP_API_URL`, `REACT_APP_OIDC_ISSUER`, `REACT_APP_OIDC_CLIENT_ID` (passed as build args in `docker-compose.yml`). See `.env` for all backend settings.
 
 ## Known limitations
 
