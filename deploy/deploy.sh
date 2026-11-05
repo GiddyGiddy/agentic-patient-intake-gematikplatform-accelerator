@@ -66,7 +66,20 @@ echo "== deploying $TAG to $ENVIRONMENT (previous: ${PREVIOUS_TAG:-none})"
 export IMAGE_TAG="$TAG"
 
 compose pull backend frontend
+
+# Database first: start it (no-op if running), back it up, then migrate before the new backend starts.
+compose up -d postgres
+for _ in $(seq 1 30); do
+  [ "$(compose ps --status running --format '{{.Health}}' postgres 2>/dev/null)" = "healthy" ] && break
+  sleep 2
+done
 backup_db
+
+echo "== alembic upgrade head"
+if ! compose run --rm --no-deps backend alembic upgrade head; then
+  echo "!! migration failed; the previous version keeps running. Backup is in $BACKUP_DIR" >&2
+  exit 1
+fi
 
 if ! compose up -d --remove-orphans; then
   echo "!! compose up failed" >&2
