@@ -1,36 +1,28 @@
 name: CD
 
-# Runs after CI succeeded on main. Images are built once, tagged with the commit SHA,
-# pushed to the on-prem registry and signed. Staging deploys automatically; production
-# waits for approval by the reviewers configured on the GitHub Environment "production".
+# Runs after CI succeeded on main: builds the images once on GitHub-hosted runners, tags them
+# with the 12-char commit SHA and pushes them to GHCR (ghcr.io/<owner>/intake/<image>).
+# Deployment is pull-based: on the server run `deploy/deploy.sh <env> <tag>` (see docs/cd-setup.md).
+# Images are signed with cosign only when the COSIGN_PRIVATE_KEY secret is set.
 on:
   workflow_run:
     workflows: [CI]
     types: [completed]
     branches: [main]
   workflow_dispatch:
-    inputs:
-      tag:
-        description: "Existing image tag to (re)deploy, e.g. a previous SHA. Empty = build current HEAD."
-        required: false
 
 permissions:
   contents: read
+  packages: write
 
 concurrency:
   group: cd-${{ github.ref }}
   cancel-in-progress: false
 
-env:
-  REGISTRY: ${{ vars.REGISTRY }}            # e.g. registry.klinik.local/intake
-  IMAGE_TAG: ${{ inputs.tag || github.event.workflow_run.head_sha || github.sha }}
-
 jobs:
-  build:
-    if: ${{ vars.REGISTRY != '' && (github.event_name == 'workflow_dispatch' || github.event.workflow_run.conclusion == 'success') }}
-    runs-on: [self-hosted, onprem]
-    outputs:
-      tag: ${{ steps.tag.outputs.tag }}
+  publish:
+    if: ${{ github.event_name == 'workflow_dispatch' || github.event.workflow_run.conclusion == 'success' }}
+    runs-on: ubuntu-latest
     strategy:
       fail-fast: true
       matrix:
@@ -41,77 +33,65 @@ jobs:
             context: frontend
           - name: mock-ti-gateway
             context: mock-ti-services/mock-ti-gateway
+    env:
+      SHA: ${{ github.event.workflow_run.head_sha || github.sha }}
+      HAS_COSIGN: ${{ secrets.COSIGN_PRIVATE_KEY != '' }}
     steps:
       - uses: actions/checkout@v4
         with:
-          ref: ${{ github.event.workflow_run.head_sha || github.sha }}
+          ref: ${{ env.SHA }}
 
-      - id: tag
-        run: echo "tag=${IMAGE_TAG:0:12}" >> "$GITHUB_OUTPUT"
-
-      - name: Skip build when redeploying an existing tag
-        id: skip
-        run: echo "skip=${{ inputs.tag != '' }}" >> "$GITHUB_OUTPUT"
-
-      - name: Registry login
-        if: steps.skip.outputs.skip != 'true'
-        run: echo "${{ secrets.REGISTRY_PASSWORD }}" | docker login "${REGISTRY%%/*}" -u "${{ secrets.REGISTRY_USER }}" --password-stdin
-
-      - name: Build and push
-        if: steps.skip.outputs.skip != 'true'
+      - name: Compute image name
+        id: img
         run: |
-          IMG="$REGISTRY/${{ matrix.name }}:${{ steps.tag.outputs.tag }}"
+          OWNER="${GITHUB_REPOSITORY_OWNER,,}"
+          REGISTRY="${{ vars.REGISTRY }}"
+          REGISTRY="${REGISTRY:-ghcr.io/$OWNER/intake}"
+          echo "ref=$REGISTRY/${{ matrix.name }}:${SHA:0:12}" >> "$GITHUB_OUTPUT"
+
+      - name: Registry login (GHCR)
+        run: echo "${{ secrets.GITHUB_TOKEN }}" | docker login ghcr.io -u "${{ github.actor }}" --password-stdin
+
+      - name: Build
+        run: |
           docker build ${{ matrix.name == 'frontend' && format('--build-arg REACT_APP_API_URL={0} --build-arg REACT_APP_OIDC_ISSUER={1} --build-arg REACT_APP_OIDC_CLIENT_ID={2}', vars.PROD_API_URL, vars.PROD_OIDC_ISSUER, vars.PROD_OIDC_CLIENT_ID) || '' }} \
-            --label org.opencontainers.image.revision=${{ github.sha }} \
-            -t "$IMG" ${{ matrix.context }}
-          docker push "$IMG"
+            --label org.opencontainers.image.revision=${SHA} \
+            --label org.opencontainers.image.source=${{ github.server_url }}/${{ github.repository }} \
+            -t "${{ steps.img.outputs.ref }}" ${{ matrix.context }}
+
+      - name: Scan image (Trivy, fixable HIGH/CRITICAL fail the publish)
+        uses: aquasecurity/trivy-action@v0.36.0
+        with:
+          image-ref: ${{ steps.img.outputs.ref }}
+          severity: HIGH,CRITICAL
+          ignore-unfixed: true
+          exit-code: "1"
+
+      - name: Push
+        run: docker push "${{ steps.img.outputs.ref }}"
 
       - name: SBOM
-        if: steps.skip.outputs.skip != 'true'
         uses: anchore/sbom-action@v0
         with:
-          image: ${{ env.REGISTRY }}/${{ matrix.name }}:${{ steps.tag.outputs.tag }}
+          image: ${{ steps.img.outputs.ref }}
           artifact-name: sbom-${{ matrix.name }}.spdx.json
 
-      - name: Sign image (cosign, key-based so it works offline)
-        if: steps.skip.outputs.skip != 'true'
+      - name: Install cosign
+        if: env.HAS_COSIGN == 'true'
         uses: sigstore/cosign-installer@v3
-      - if: steps.skip.outputs.skip != 'true'
+      - name: Sign image
+        if: env.HAS_COSIGN == 'true'
         env:
           COSIGN_PRIVATE_KEY: ${{ secrets.COSIGN_PRIVATE_KEY }}
           COSIGN_PASSWORD: ${{ secrets.COSIGN_PASSWORD }}
-        run: cosign sign --yes --key env://COSIGN_PRIVATE_KEY "$REGISTRY/${{ matrix.name }}:${{ steps.tag.outputs.tag }}"
+        run: cosign sign --yes --key env://COSIGN_PRIVATE_KEY "${{ steps.img.outputs.ref }}"
 
-  deploy-staging:
-    needs: build
-    runs-on: [self-hosted, onprem, staging]
-    environment: staging
+  summary:
+    needs: publish
+    runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
-        with:
-          ref: ${{ github.event.workflow_run.head_sha || github.sha }}
-      - name: Deploy to staging
-        run: ./deploy/deploy.sh staging "${{ needs.build.outputs.tag }}"
-      - name: Smoke tests
-        run: ./deploy/smoke-test.sh "${{ vars.STAGING_URL }}"
-
-  deploy-production:
-    needs: [build, deploy-staging]
-    runs-on: [self-hosted, onprem, production]
-    environment: production        # required reviewers = manual approval gate
-    steps:
-      - uses: actions/checkout@v4
-        with:
-          ref: ${{ github.event.workflow_run.head_sha || github.sha }}
-      - uses: sigstore/cosign-installer@v3
-      - name: Verify image signatures
+      - name: Show deploy command
         run: |
-          for i in backend frontend; do
-            cosign verify --key env://COSIGN_PUBLIC_KEY "$REGISTRY/$i:${{ needs.build.outputs.tag }}"
-          done
-        env:
-          COSIGN_PUBLIC_KEY: ${{ vars.COSIGN_PUBLIC_KEY }}
-      - name: Deploy (backs up DB, health-checks, rolls back on failure)
-        run: ./deploy/deploy.sh production "${{ needs.build.outputs.tag }}"
-      - name: Smoke tests
-        run: ./deploy/smoke-test.sh "${{ vars.PROD_URL }}"
+          SHA="${{ github.event.workflow_run.head_sha || github.sha }}"
+          echo "### Images published" >> "$GITHUB_STEP_SUMMARY"
+          echo "Deploy on the server: \`REGISTRY=<registry> ./deploy/deploy.sh staging ${SHA:0:12}\`" >> "$GITHUB_STEP_SUMMARY"
