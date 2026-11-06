@@ -11,7 +11,7 @@ Agentic patient intake for the gematik Telematikinfrastruktur (TI): structured a
 | PostgreSQL persistence (sessions, consent, audit, KIM outbox) | Done, tests pass on SQLite and on a real PostgreSQL; Alembic migrations for production |
 | Mock TI services (ID-Dienst, KIS/ePA HAPI FHIR, KIM client module, TI gateway with simulated SMC-B) | Done |
 | CI (GitHub Actions: tests on SQLite + PostgreSQL, frontend build, pip/npm audit, gitleaks, image builds + Trivy) | Done, green on GitHub |
-| CD to the on-premise server (`cd.yml`, `compose.prod.yml`, `deploy/`) | Written; production image stack verified locally; not yet run on a real runner |
+| CD to the on-premise server (`cd.yml`, `compose.prod.yml`, `deploy/`) | Pull-based: images built, scanned and pushed to GHCR by GitHub; server runs `deploy/deploy.sh`. Production image stack verified locally; not yet run on the VM |
 | Podman compose for the whole dev stack | Config validated; full `podman compose up --build` not yet run end-to-end |
 | Browser run-through of frontend + backend + mocks together | Not yet done |
 | Production TI connection (real gateway/Konnektor, SMC-B/HSM-B, real Gesundheits-ID) | Not part of this accelerator; only URLs/config change |
@@ -139,18 +139,18 @@ Frontend config is read at build time: `REACT_APP_API_URL`, `REACT_APP_OIDC_ISSU
 | Piece | Purpose |
 |---|---|
 | `.github/workflows/ci.yml` | On every PR and push to `main`: backend tests (SQLite + PostgreSQL), frontend tests and build, `pip-audit`, `npm audit` (critical), gitleaks, compose validation, image builds with Trivy (fixable HIGH/CRITICAL fail). |
-| `.github/workflows/cd.yml` | After CI succeeds on `main`: build images tagged with the commit SHA, push to the on-prem registry, SBOM, cosign signature, deploy to staging with smoke tests, then to production after manual approval. Skipped until the repository variable `REGISTRY` is set. |
+| `.github/workflows/cd.yml` | After CI succeeds on `main`: build images on GitHub-hosted runners, tag with the 12-char commit SHA, Trivy scan, push to GHCR, SBOM, optional cosign signature. Deployment is pull-based: run `deploy/deploy.sh <env> <tag>` on the server. |
 | `compose.prod.yml` | Production stack from registry images only: TLS proxy, frontend, backend, PostgreSQL, local LLM. No mocks, no published backend/DB ports, internal network without internet access. |
 | `deploy/deploy.sh` | Pull, `pg_dump`, `alembic upgrade head`, `up -d`, health wait, **automatic rollback** to the previous tag. |
 | `deploy/smoke-test.sh` | Black-box checks: health, frontend, HTTPS redirect, HSTS, auth enforced on the API. |
 | `deploy/prod.env.example` | Template for the server-side secrets file `/etc/intake/<env>.env` (never committed). |
 
-To enable deployments: register a self-hosted runner on the server (labels `onprem`, `staging`, `production`), set the repository variables (`REGISTRY`, `STAGING_URL`, `PROD_URL`, `PROD_API_URL`, `PROD_OIDC_ISSUER`, `PROD_OIDC_CLIENT_ID`, `COSIGN_PUBLIC_KEY`) and secrets (`REGISTRY_USER`, `REGISTRY_PASSWORD`, `COSIGN_PRIVATE_KEY`, `COSIGN_PASSWORD`), create the `staging` and `production` environments (required reviewers on production), and place the TLS certificate (`fullchain.pem`, `privkey.pem`) and SMC-B certificate on the server. Redeploy or roll back by running the CD workflow manually with an existing image tag.
+To enable deployments follow [docs/cd-setup.md](docs/cd-setup.md) (server bootstrap with `deploy/setup-server.sh`, GHCR pull login, TLS certificate, manual deploy and rollback). Optional repository variables `PROD_API_URL`, `PROD_OIDC_ISSUER`, `PROD_OIDC_CLIENT_ID` are baked into the frontend image.
 
 ## Known limitations
 
 - Full dev stack not yet exercised end-to-end in containers or a browser.
-- The CD pipeline has not run on a real self-hosted runner yet.
+- The CD pipeline and `deploy.sh` have not run on the Ubuntu VM yet; there is no automatic deploy or approval gate (pull-based by design for now).
 - A rollback does not revert the database schema (restore the `pg_dump` manually if needed).
 - The `error_handler` alert is an audit-log entry; there is no Sentry/Prometheus hook yet.
 - Rate limiter is in memory per instance.
