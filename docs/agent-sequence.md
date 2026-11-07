@@ -36,7 +36,7 @@ sequenceDiagram
     UI->>API: POST /api/chat + Bearer access token
     API->>IDP: Resolve signing key from JWKS
     IDP-->>API: JWKS public key
-    API->>API: Verify JWT signature, issuer, audience; get sub
+    API->>API: Verify JWT signature, issuer and audience and get sub
     API->>DB: Load/create server-side session for sub
     API->>Graph: Invoke state(patient_id, messages, consent, token)
     Graph->>Intake: Route to IntakeAgent
@@ -55,7 +55,7 @@ sequenceDiagram
         Intake-->>Graph: triage_score + summary + next_agent=ConsentAgent
         Graph->>Consent: Route to ConsentAgent
         alt Consent is not active
-            Consent-->>Graph: iam_required=true; next_agent=ConsentAgent
+            Consent-->>Graph: iam_required=true and next_agent=ConsentAgent
             Graph-->>API: Stop this graph run
             API->>DB: Save triage/session
             API-->>UI: iam_required + consent prompt
@@ -72,7 +72,7 @@ sequenceDiagram
                 API->>Graph: Invoke again with stored triage + consent + current bearer token
                 Graph->>Consent: Entry routes directly to ConsentAgent
                 Consent->>EPA: GET MedicationStatement?subject=Patient/{sub}
-                Note over EPA,Gateway: EPA_BASE_URL points to mock TI gateway in dev; production uses configured TI endpoint.
+                Note over EPA,Gateway: EPA_BASE_URL points to the mock gateway in dev and to the configured TI endpoint in production.
                 EPA->>Gateway: FHIR request with patient bearer token
                 Gateway->>KIS: Forward to HAPI FHIR (mock ePA/KIS)
                 KIS-->>Gateway: MedicationStatement Bundle
@@ -96,7 +96,7 @@ sequenceDiagram
                 alt Scheduling infrastructure error
                     Scheduling-->>Graph: GATEWAY_* error + next_agent=ErrorHandler
                     Graph->>API: ErrorHandler writes scheduling_failed audit + fallback reply
-                    API-->>UI: scheduling_failed=true; appointment not booked
+                    API-->>UI: scheduling_failed=true and fallback message
                 else Scheduling succeeds
                     Scheduling-->>Graph: appointment_id + slot_start + next_agent=KIMAgent
                     Graph->>KIM: Route to KIMAgent
@@ -108,7 +108,7 @@ sequenceDiagram
                     Outbox->>KIMCM: SMTP send
                     alt KIM client module available
                         KIMCM-->>Outbox: Accepted
-                        Outbox->>DB: Mark sent; erase stored medical content
+                        Outbox->>DB: Mark sent and erase stored medical content
                         Outbox-->>KIM: kim_sent=true
                     else KIM client module unavailable
                         KIMCM-->>Outbox: SMTP error

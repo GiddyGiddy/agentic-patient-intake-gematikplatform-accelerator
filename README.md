@@ -1,6 +1,6 @@
-# Agentic Patient Intake – gematik Accelerator
+# Agentic Patient Intake 
 
-Agentic patient intake for the gematik Telematikinfrastruktur (TI): structured anamnesis, Manchester triage, ePA consent, FHIR appointment booking in the KIS and a KIM letter to the referring doctor. Built with React, FastAPI, LangGraph, PostgreSQL and a local LLM. Runs **on-premise** with Podman; the TI services are simulated by local mocks for development and end-to-end tests.
+Agentic AI patient intake on the Telematikinfrastruktur (TI): structured anamnesis, Manchester triage, ePA consent, FHIR appointment booking in the KIS and a KIM letter to the referring doctor. Built with React, FastAPI, LangGraph, PostgreSQL and a local LLM. Runs **on-premise** with Podman; the TI services(ti-gateway, KIM-CM,Id-services) are simulated by local mocks for development and end-to-end tests.
 
 ## Current status
 
