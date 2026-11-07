@@ -1,0 +1,163 @@
+# Patient intake and agent sequence
+
+This sequence documents the implemented patient flow. The mock services are development
+substitutes; production endpoints must be configured for the real IdP and TI services.
+
+## Login, intake, consent, booking, and KIM
+
+```mermaid
+sequenceDiagram
+    autonumber
+    actor Patient
+    participant UI as Frontend (React)
+    participant IDP as Gesundheits-ID / mock-id-dienst
+    participant API as FastAPI
+    participant DB as PostgreSQL
+    participant Graph as LangGraph shared state
+    participant Intake as IntakeAgent
+    participant LLM as Local Ollama
+    participant Consent as ConsentAgent
+    participant EPA as ePA FHIR endpoint
+    participant Gateway as TI gateway / mock-ti-gateway
+    participant KIS as KIS FHIR / mock-kis-fhir
+    participant Scheduling as SchedulingAgent
+    participant KIM as KIMAgent
+    participant Outbox as KIM outbox
+    participant KIMCM as KIM client module / mock-kim-cm
+
+    Patient->>UI: Start sign-in
+    UI->>IDP: OIDC Authorization Code + PKCE
+    IDP-->>Patient: Authenticate (mock or real IdP)
+    IDP-->>UI: Redirect with authorization code
+    UI->>IDP: Exchange code + PKCE verifier
+    IDP-->>UI: Access token (JWT)
+
+    Patient->>UI: Submit symptom message
+    UI->>API: POST /api/chat + Bearer access token
+    API->>IDP: Resolve signing key from JWKS
+    IDP-->>API: JWKS public key
+    API->>API: Verify JWT signature, issuer, audience; get sub
+    API->>DB: Load/create server-side session for sub
+    API->>Graph: Invoke state(patient_id, messages, consent, token)
+    Graph->>Intake: Route to IntakeAgent
+    Intake->>Intake: Keyword urgency check
+    opt Follow-up or final summary/triage
+        Intake->>LLM: Generate follow-up or assess summary/triage
+        LLM-->>Intake: Question or JSON assessment
+    end
+    alt More information needed
+        Intake-->>Graph: reply + next_agent=END
+        Graph-->>API: Partial state
+        API->>DB: Save messages/session
+        API-->>UI: Follow-up question
+        UI-->>Patient: Display question
+    else Triage complete
+        Intake-->>Graph: triage_score + summary + next_agent=ConsentAgent
+        Graph->>Consent: Route to ConsentAgent
+        alt Consent is not active
+            Consent-->>Graph: iam_required=true; next_agent=ConsentAgent
+            Graph-->>API: Stop this graph run
+            API->>DB: Save triage/session
+            API-->>UI: iam_required + consent prompt
+            UI-->>Patient: Ask for ePA consent
+            Patient->>UI: Accept or decline
+            UI->>API: POST /api/consent {granted}
+            Note over API,DB: Backend authenticates the request and stores a TTL consent record.
+            Note over API,IDP: Current implementation does not perform a fresh step-up / MFA authorization here.
+            alt Declined
+                API->>DB: Revoke/leave consent inactive
+                API-->>UI: Consent inactive
+            else Granted
+                API->>DB: Store consent grant and token jti
+                API->>Graph: Invoke again with stored triage + consent + current bearer token
+                Graph->>Consent: Entry routes directly to ConsentAgent
+                Consent->>EPA: GET MedicationStatement?subject=Patient/{sub}
+                Note over EPA,Gateway: EPA_BASE_URL points to mock TI gateway in dev; production uses configured TI endpoint.
+                EPA->>Gateway: FHIR request with patient bearer token
+                Gateway->>KIS: Forward to HAPI FHIR (mock ePA/KIS)
+                KIS-->>Gateway: MedicationStatement Bundle
+                Gateway-->>EPA: FHIR Bundle
+                EPA-->>Consent: Medication plan (or unreachable result)
+                Consent-->>Graph: medication_plan + epa_available + next_agent=SchedulingAgent
+                Graph->>Scheduling: Route to SchedulingAgent
+                Scheduling->>Gateway: Search free FHIR Slot
+                Gateway->>KIS: GET Slot?status=free&start>=...
+                KIS-->>Gateway: Earliest matching Slot (or none)
+                Gateway-->>Scheduling: Slot result
+                Scheduling->>Gateway: Create FHIR Appointment
+                Gateway->>KIS: POST Appointment
+                KIS-->>Gateway: Appointment resource/id
+                opt A free slot was found
+                    Scheduling->>Gateway: Mark Slot busy
+                    Gateway->>KIS: Update Slot
+                    KIS-->>Gateway: Updated Slot
+                end
+                Gateway-->>Scheduling: Booking result
+                alt Scheduling infrastructure error
+                    Scheduling-->>Graph: GATEWAY_* error + next_agent=ErrorHandler
+                    Graph->>API: ErrorHandler writes scheduling_failed audit + fallback reply
+                    API-->>UI: scheduling_failed=true; appointment not booked
+                else Scheduling succeeds
+                    Scheduling-->>Graph: appointment_id + slot_start + next_agent=KIMAgent
+                    Graph->>KIM: Route to KIMAgent
+                    opt Generate letter with local LLM
+                        KIM->>LLM: Draft formal letter from shared state
+                        LLM-->>KIM: Letter text (template used if unavailable)
+                    end
+                    KIM->>Outbox: Persist letter + triage.json first
+                    Outbox->>KIMCM: SMTP send
+                    alt KIM client module available
+                        KIMCM-->>Outbox: Accepted
+                        Outbox->>DB: Mark sent; erase stored medical content
+                        Outbox-->>KIM: kim_sent=true
+                    else KIM client module unavailable
+                        KIMCM-->>Outbox: SMTP error
+                        Outbox->>DB: Keep pending row for retry
+                        Outbox-->>KIM: kim_sent=false
+                    end
+                    KIM-->>Graph: next_agent=END
+                    Graph-->>API: Final shared state
+                    API->>DB: Save results in patient session
+                    API-->>UI: Triage, appointment, ePA status, KIM status
+                    UI-->>Patient: Display outcome
+                end
+            end
+        end
+    end
+```
+
+## What is passed between agents
+
+Agents do not call each other directly. LangGraph passes partial updates to one shared
+`IntakeState`; each node returns only the fields it adds or changes.
+
+| Producer | State fields written | Consumer |
+|---|---|---|
+| API | `patient_id`, `messages`, `consent_granted`, `access_token`; on resume, existing triage and summary | IntakeAgent or ConsentAgent |
+| IntakeAgent | `reply`, `anamnesis_summary`, `triage_score`, `next_agent` | ConsentAgent, or the API if the graph ends for a follow-up |
+| ConsentAgent | `iam_required`, `iam_message`; after consent, `medication_plan`, `epa_available`, `next_agent` | API/frontend while waiting; otherwise SchedulingAgent |
+| SchedulingAgent | `appointment_id`, `slot_start`, `next_agent`; on failure `scheduling_error` | KIMAgent or ErrorHandler |
+| ErrorHandler | `reply`, `scheduling_failed`, `next_agent` | API/frontend |
+| KIMAgent | `letter`, `kim_sent`, `next_agent` | API/session and response |
+
+The access token is an internal graph field used for the ePA request. It is not returned
+to the frontend as part of the chat response. The backend persists the conversation,
+consent, and final result in PostgreSQL; the graph's working state is not itself the
+durable session.
+
+## Development mocks and production boundary
+
+- **mock-id-dienst (:8081):** serves the OIDC discovery/JWKS endpoints and issues test tokens.
+- **mock-ti-gateway (:8082):** development proxy in front of HAPI; simulates TI gateway identity
+  headers/signing. It is not a real Konnektor and does not provide production SMC-B security.
+- **mock-kis-fhir / HAPI (:8080):** serves the development FHIR resources, including seeded
+  Patient, Slot, and MedicationStatement test data.
+- **mock-kim-cm (:2525):** accepts SMTP for development and logs captured test messages; it is
+  not a production KIM client module and does not deliver through the TI.
+- **Production compose:** does not include these mocks. Set the IdP, ePA/FHIR gateway, KIM-CM,
+  TLS, and SMC-B configuration to real operator-provided values before any real clinical use.
+
+The current consent endpoint records the authenticated user's boolean decision with a TTL; it
+does not launch a separate Gesundheits-ID consent or MFA ceremony. The current backend also does
+not distinguish patient, MFA, and administrator roles. Do not treat the mock flow as production
+authorization or clinical triage.
