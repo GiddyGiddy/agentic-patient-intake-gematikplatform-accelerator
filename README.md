@@ -68,6 +68,7 @@ POST /api/chat → intake_agent (anamnesis, Manchester triage)
 - Red/orange patients get acute slots, green patients standard slots.
 - KIS/gateway calls use a connect/read timeout (`FHIR_CONNECT_TIMEOUT_S`, `FHIR_READ_TIMEOUT_S`). Failures are mapped to `GATEWAY_TIMEOUT`, `GATEWAY_CONNECTION_FAILED`, `GATEWAY_AUTH_ERROR` or `GATEWAY_ERROR`; the `error_handler` node writes an alerting audit event (`scheduling_failed`), shows the patient a neutral German fallback message (no stack trace) and ends the run. The API response then has `scheduling_failed: true`.
 - The graph is invoked in `backend/app/api/endpoints.py` (`_run`).
+- For the request-by-request sequence, shared-state fields, and mock-service boundaries, see [docs/agent-sequence.md](docs/agent-sequence.md).
 
 ## Backend API
 
